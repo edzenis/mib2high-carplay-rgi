@@ -22,3 +22,5 @@ Do not infer compatibility from the shared MHI2 product family alone.
 ## Virtual Cockpit
 
 v1.0.0 does not claim validated Virtual Cockpit graphical route-guidance output. The validated display target is the factory HUD.
+
+v1.1.0 introduces revised ownership/presentation behavior intended to preserve factory HUD guidance while preventing CarPlay route-guidance presentation from taking over the Virtual Cockpit. That v1.1.0 behavior has not yet been vehicle-validated.

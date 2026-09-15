@@ -72,3 +72,20 @@ In this session Waze did not expose the normal structured maneuver stream used b
 ## Not yet validated
 
 Native Audi navigation hand-back after CarPlay route guidance without an MMI reboot has not yet been validated.
+
+
+## v1.1.0 vehicle observations
+
+The v1.1.0 implementation changes HUD presentation behavior and was tested on the same K2161 platform.
+
+Observed behavior:
+
+- maneuver arrows work once an authoritative maneuver is active
+- numeric distance is shown with the active maneuver
+- the first maneuver can be absent at guidance startup; after that maneuver is completed, the following maneuver appears
+- CarPlay reconnect succeeds while HUD RGI does not automatically resume
+- reconnect failure was observed both with and without a route already active
+- short-range HUD distance was observed to stop at approximately 50 m instead of continuing toward zero
+- Virtual Cockpit behavior was not checked during this test
+
+These observations are tracked as known v1.1.0 issues. They do not change the validated v1.0.0 results above.

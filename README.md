@@ -25,6 +25,26 @@ Known limitations:
 - **Native Audi navigation hand-back:** starting native Audi guidance after CarPlay guidance without rebooting the MMI has not yet been validated
 - Virtual Cockpit graphical guidance is not claimed by this release; the validated output is the factory HUD
 
+## v1.1.0 development status
+
+v1.1.0 changes the HUD presentation behavior rather than being a transport-only update. The current vehicle-tested implementation:
+
+- keeps the real current maneuver icon active instead of substituting a synthetic follow-street state
+- keeps numeric distance associated with the active maneuver
+- includes revised route-guidance ownership/presentation behavior intended to keep CarPlay guidance out of the Virtual Cockpit while preserving HUD output
+- includes reconnect/session recovery work
+
+Vehicle testing also exposed known issues that are intentionally tracked for the next corrective update:
+
+- **initial maneuver:** the first maneuver can be missing when guidance starts; the next maneuver appears normally after completing the first one
+- **reconnect recovery:** CarPlay can reconnect while HUD RGI does not resume automatically, including when a route was already active
+- **short-range distance:** HUD distance was observed to stop at approximately 50 m instead of continuing toward zero
+- **Virtual Cockpit:** the v1.1.0 ownership/presentation behavior has not yet been vehicle-validated
+
+These are known v1.1.0 issues, not changes to the v1.0.0 release.
+
+See [CHANGELOG.md](CHANGELOG.md) and [vehicle validation](docs/validation.md).
+
 ## Architecture
 
 ```text
