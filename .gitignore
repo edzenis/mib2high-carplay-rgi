@@ -1,0 +1,14 @@
+# Build output
+/build/*
+!/build/.gitkeep
+
+# Local OEM-derived compile dependency; never commit it.
+/java/lib/*
+!/java/lib/.gitkeep
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
