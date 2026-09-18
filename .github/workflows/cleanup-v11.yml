@@ -1,0 +1,77 @@
+name: cleanup-v11
+
+on:
+  push:
+    branches: [release-v1.1]
+    paths: [.cleanup-trigger]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release-v1.1
+          fetch-depth: 0
+      - name: Clean public source and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('java/src/routeguidance/BAPBridge.java')
+          s = p.read_text()
+
+          s = s.replace('        /* v1.1 never uses the BAP distance bargraph. */\n',
+                        '        /* Keep the BAP distance bargraph disabled for direct RGI output. */\n')
+          s = s.replace('             * Distance is converted with native BAPDistanceFormatter rules.\n',
+                        '             * Sub-kilometer metric values are encoded directly; other values use the OEM formatter.\n')
+          s = s.replace('                        } else if (shouldClearManeuver) {',
+                        '                    } else if (shouldClearManeuver) {')
+          s = s.replace('                        } else if (hasAnyManeuver) {',
+                        '                    } else if (hasAnyManeuver) {')
+
+          sig = '    private void sendFollowStreet() throws Exception {'
+          if sig in s:
+              start = s.index('    /**\n     * Send FOLLOW_STREET descriptor.\n     */\n' + sig)
+              brace = s.index('{', s.index(sig))
+              depth = 0
+              i = brace
+              while i < len(s):
+                  if s[i] == '{': depth += 1
+                  elif s[i] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          end = i + 1
+                          while end < len(s) and s[end] in '\r\n': end += 1
+                          s = s[:start] + s[end:]
+                          break
+                  i += 1
+              else:
+                  raise SystemExit('unterminated sendFollowStreet')
+
+          p.write_text(s)
+          PY
+
+          rm -f .cleanup-trigger
+
+          ! grep -q 'sendFollowStreet' java/src/routeguidance/BAPBridge.java
+          ! grep -Eq '\b(v4|v5|v7|v8|v9|step[0-9]+)\b' java/src/routeguidance/BAPBridge.java java/src/routeguidance/RouteGuidance.java native/send_hook.c
+          ! grep -q 'hudOnly' java/src/routeguidance/BAPBridge.java
+          grep -q 'MT_START_ROUTE' java/src/routeguidance/BAPBridge.java
+          grep -Eq 'meters[[:space:]]*<[[:space:]]*1000' java/src/routeguidance/BAPBridge.java
+          grep -Eq 'meters[[:space:]]*\*[[:space:]]*10' java/src/routeguidance/BAPBridge.java
+          grep -q 'RGI_STALE_REARM_MS = 10000' native/send_hook.c
+          grep -q 'soft_rearm reason=rgi_silence' native/send_hook.c
+          grep -q 'session_boundary msg=1d00' native/send_hook.c
+
+          gcc -fsyntax-only -std=c99 -pthread -I native native/send_hook.c
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Clean v1.1 public source'
+          git push origin HEAD:release-v1.1
