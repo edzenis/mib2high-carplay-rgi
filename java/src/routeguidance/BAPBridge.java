@@ -346,7 +346,7 @@ public class BAPBridge {
                     + t.getClass().getName() + ": " + t.getMessage());
             }
 
-            Log.i(TAG, "Started (rgType=" + ACTIVE_RGTYPE + ", hudOnly=true)");
+            Log.i(TAG, "Started (rgType=" + ACTIVE_RGTYPE + ", display=HUD)");
             return true;
 
         } catch (Throwable e) {
@@ -729,6 +729,16 @@ public class BAPBridge {
     /* ============================================================
      * Maneuver Sending (current maneuver for HUD)
      * ============================================================ */
+
+    /**
+     * Send FOLLOW_STREET descriptor for the K2161 startup sync transaction only.
+     */
+    private void sendFollowStreet() throws Exception {
+        CombiBAPNaviManeuverDescriptor[] arr = new CombiBAPNaviManeuverDescriptor[1];
+        arr[0] = createDescriptor(ManeuverMapper.FOLLOW_STREET, ManeuverMapper.DIR_STRAIGHT, 0, new byte[0]);
+        traceBap("updateManeuverDescriptorAndExitView", "count=1 FOLLOW_STREET exit=0,0");
+        appConnectorNavi.updateManeuverDescriptorAndExitView(arr, 0, 0);
+    }
 
     /**
      * Send NO_SYMBOL descriptor.
