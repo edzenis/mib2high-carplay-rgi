@@ -2,7 +2,7 @@
  * CarPlay Route Guidance - BAP Bridge
  *
  * Translates real CarPlay route-guidance state to the exact K2161 BAP API.
- * Scope: HUD maneuver arrow and distance only; no VC/custom renderer.
+ * Scope: factory HUD route guidance; no graphical Virtual Cockpit renderer.
  *
  */
 package com.luka.carplay.routeguidance;
@@ -26,34 +26,20 @@ public class BAPBridge {
 
     private static final String TAG = "BAPBridge";
     /* RGType sent to cluster: 0=RGI (BAP ManeuverDescriptor icons for HUD).
-     * FPK has rgType=4 hardcoded in CombiBAPListener -- the BAP rgType=0 used here is for the
+     * FPK has rgType=4 hardcoded in CombiBAPListener -- the BAP rgType=0 is for the
      * AppConnectorNavi FSG sync flow, not for view mode selection. */
     private static final int ACTIVE_RGTYPE = 0;  /* RGI -- native BAP HUD icons. */
     private static final boolean BAP_TRACE_ENABLED = true;
 
-    /* ExitView variants (BAP spec FctID 49).  EU/NAR are used by
-     * sendExitView() which toggles between them to defeat AppConnectorNavi's
-     * sendStatusIfChanged dedup; exitViewNum=0 makes the variant cosmetic.
-     * ROW/ASIA kept for protocol parity even though they're not currently
-     * selected -- if regional variant logic returns, the codes are here. */
-    private static final int EXITVIEW_EU = 0;
-    private static final int EXITVIEW_NAR = 1;
-    private static final int EXITVIEW_ROW = 2;
-    private static final int EXITVIEW_ASIA = 3;
-
     /* BAP supports three maneuver slots, but publish only the current one. */
     private static final int MAX_BAP_MANEUVERS = 1;
 
-    /*
-     * Fixed maneuver thresholds (meters).
-     * These are intentionally static (no speed/time conversion at runtime).
-     */
+    /* Presentation thresholds used only for maneuver state / street text.
+     * The real maneuver icon and numeric distance are published at all ranges. */
     private static final int CITY_PREPARE_THRESHOLD_M = 1500;
     private static final int HIGHWAY_PREPARE_THRESHOLD_M = 3000;
     private static final int HIGHWAY_STEP_THRESHOLD_M = 2000;
-    private static final int BARGRAPH_ACTION_PERCENT_OF_PREPARE = 15;
-    private static final int BARGRAPH_BLINK_PERCENT = 20;
-    private static final int ACTION_BLINK_INTERVAL_MS = 600;
+    private static final int ACTION_PERCENT_OF_PREPARE = 15;
 
     private CombiBAPServiceNavi appConnectorNavi;
     private final BAPDistanceFormatter distanceFormatter =
@@ -61,45 +47,14 @@ public class BAPBridge {
 
     private boolean initialized = false;
 
-    /*
-     * Approach mode: true when distM <= prepareThreshold (showing real maneuver icon),
-     * false when further away (showing FOLLOW_STREET).
-     */
+    /* Approach state affects only maneuver-state emphasis and turn-to text. */
     private boolean inApproachZone = false;
-    /* Track the primary maneuver's slot identity to detect when iOS
-     * actually swapped the head of the list vs. just reordered/extended it.
-     * mVer changes when the C hook reassigns a slot to a new iAP2 index. */
     private int lastFirstManeuverIdx = -1;
     private int lastFirstManeuverVer = -1;
     private String latchedTurnToText = "";
-    /* Call-for-action blink phase: true=100%, false=0% */
-    private boolean actionBlinkFull = true;
     private final Object distanceToManeuverLock = new Object();
     private boolean hasLastDistM = false;
     private int lastDistM = 0;
-    private boolean lastBarOn = false;
-    private int lastBar = 0;
-    private Thread actionBlinkThread;
-    private boolean actionBlinkThreadRunning = false;
-    /* Monotonically increases on every start/stop.  Each spawned blink
-     * thread captures the value at start time; on every iteration it
-     * re-checks against the current counter and exits if a newer
-     * generation has been allocated.  This guarantees a stale thread
-     * (for example, one that could not be joined in time) cannot survive into a new
-     * approach-zone cycle and double up the bargraph blink. */
-    private int actionBlinkGeneration = 0;
-    private int blinkDistM = -1;
-    private int blinkBargraphDenominatorM = -1;
-    private boolean blinkArmed = false;
-    private int exitViewNum = 0;
-    /*
-     * FSG sync(1) fix: AppConnectorNavi uses sendStatusIfChanged internally.
-     * If exitView variant+num is unchanged, FctID 49 is not sent, sync(1) for
-     * {23,18,49} never closes, and ManeuverDescriptor updates are silently
-     * dropped.  Toggling the variant forces a "change" on every descriptor send.
-     * Since exitViewNum=0 (no exit view), the variant is cosmetically irrelevant.
-     */
-    private int exitViewSendCount = 0;
     private K2161RouteGuidanceOwnership ownership;
 
     private ClusterService csRef;
@@ -127,126 +82,6 @@ public class BAPBridge {
         }
     }
 
-    private synchronized void resetActionBlinkState() {
-        actionBlinkFull = true;
-        blinkDistM = -1;
-        blinkBargraphDenominatorM = -1;
-        blinkArmed = false;
-    }
-
-    private synchronized void updateActionBlinkContext(boolean armed, int distM, int bargraphDenominatorM) {
-        blinkArmed = armed;
-        blinkDistM = distM;
-        blinkBargraphDenominatorM = bargraphDenominatorM;
-        if (!armed || distM <= 0 || bargraphDenominatorM <= 0 || distM > bargraphDenominatorM) {
-            actionBlinkFull = true;
-        }
-    }
-
-    private synchronized boolean isActionBlinkThreadRunning() {
-        return actionBlinkThreadRunning;
-    }
-
-    private void startActionBlinkThread() {
-        final int myGen;
-        synchronized (this) {
-            if (actionBlinkThreadRunning) return;
-            actionBlinkThreadRunning = true;
-            myGen = ++actionBlinkGeneration;
-            actionBlinkThread = new Thread(new Runnable() {
-                public void run() {
-                    actionBlinkLoop(myGen);
-                }
-            }, "BAPActionBlink");
-            actionBlinkThread.setDaemon(true);
-            actionBlinkThread.start();
-        }
-        Log.d(TAG, "Action blink timer started gen=" + myGen
-              + " (" + ACTION_BLINK_INTERVAL_MS + "ms)");
-    }
-
-    private void stopActionBlinkThread() {
-        Thread t;
-        synchronized (this) {
-            if (!actionBlinkThreadRunning) return;
-            actionBlinkThreadRunning = false;
-            /* Bump generation immediately so any wakeup of the old thread
-             * (even after this method returns without successful join)
-             * sees a stale generation and exits cleanly. */
-            ++actionBlinkGeneration;
-            t = actionBlinkThread;
-            actionBlinkThread = null;
-            resetActionBlinkState();
-        }
-        if (t != null) {
-            t.interrupt();
-            try { t.join(500); } catch (InterruptedException e) { /* ignore */ }
-            if (t.isAlive()) {
-                /* Thread didn't honor interrupt within 500 ms.  Generation
-                 * bump above guarantees it can't actually mutate state
-                 * after waking up, so this is a soft warning, not a leak
-                 * of behavior. */
-                Log.w(TAG, "Blink thread still alive after join(500); orphaned by generation bump");
-            }
-        }
-        Log.d(TAG, "Action blink timer stopped");
-    }
-
-    private void actionBlinkLoop(int myGen) {
-        while (true) {
-            try {
-                Thread.sleep(ACTION_BLINK_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                /* loop continues; stop is signaled inside sendActionBlinkTick
-                 * via generation check */
-            }
-            /* Authoritative generation + state check happens atomically
-             * inside sendActionBlinkTick(myGen) under synchronized(this).
-             * No outer unsynchronized check — reading non-volatile fields
-             * here could see stale values and prematurely kill a live
-             * thread.  When stop is requested, sendActionBlinkTick will
-             * observe the new generation and return; return here as well
-             * to exit the loop. */
-            if (!sendActionBlinkTick(myGen)) {
-                return;
-            }
-        }
-    }
-
-    /**
-     * Emit one blink tick for the calling thread's generation.  Returns
-     * true if the loop should continue, false if this thread is now an
-     * orphan (generation bumped) and should exit.
-     *
-     * Generation check + state read + send are all inside one
-     * synchronized(this) block, mutually exclusive with start/stop and
-     * resetActionBlinkState().  No way for an orphan thread to send a
-     * tick using a fresh generation's state.
-     */
-    private boolean sendActionBlinkTick(int myGen) {
-        synchronized (this) {
-            if (myGen != actionBlinkGeneration) return false;
-            if (!blinkArmed || blinkDistM <= 0 || blinkBargraphDenominatorM <= 0
-                    || blinkDistM > blinkBargraphDenominatorM) return true;
-            int linBargraph = (blinkDistM * 100) / blinkBargraphDenominatorM;
-            if (linBargraph < 0) linBargraph = 0;
-            if (linBargraph > 100) linBargraph = 100;
-            if (linBargraph >= BARGRAPH_BLINK_PERCENT) {
-                actionBlinkFull = true;
-                return true;
-            }
-            int bargraph = actionBlinkFull ? 100 : 0;
-            actionBlinkFull = !actionBlinkFull;
-
-            try {
-                sendDistanceToManeuverRaw(blinkDistM, true, bargraph);
-            } catch (Exception e) {
-                Log.e(TAG, "Action blink tick failed", e);
-            }
-        }
-        return true;
-    }
-
     /**
      * Send distance to maneuver through AppConnectorNavi using native formatter rules.
      */
@@ -255,25 +90,17 @@ public class BAPBridge {
             if (meters > 0) {
                 hasLastDistM = true;
                 lastDistM = meters;
-                lastBarOn = bargraphOn;
-                lastBar = bargraph;
             } else {
                 hasLastDistM = false;
                 lastDistM = 0;
-                lastBarOn = false;
-                lastBar = 0;
             }
         }
 
-        if (meters <= 0) {
-            bargraphOn = false;
-            bargraph = 0;
-        }
-
+        /* v1.1 never uses the BAP distance bargraph. */
         FormattedDistance fd = formatDistanceToTurn(meters);
         traceBap("updateDistanceToNextManeuver",
-            fd.value + "," + fd.unit + "," + bargraphOn + "," + bargraph);
-        appConnectorNavi.updateDistanceToNextManeuver(fd.value, fd.unit, bargraphOn, bargraph);
+            fd.value + "," + fd.unit + ",false,0");
+        appConnectorNavi.updateDistanceToNextManeuver(fd.value, fd.unit, false, 0);
     }
 
     private void sendDistanceToDestinationRaw(int meters, boolean isStopOver) {
@@ -286,6 +113,11 @@ public class BAPBridge {
         if (meters <= 0) return new FormattedDistance(-1, 0);
         try {
             boolean metric = isMetricDistanceUnits();
+            /* K2161 metric unit 0 is 0.1 m.  The stock turn formatter clamps
+             * short values; preserve the actual CarPlay distance below 1 km. */
+            if (metric && meters < 1000) {
+                return new FormattedDistance(meters * 10, 0);
+            }
             /* BAPDistanceFormatter$BAPDistance is public, but the outer class .class file
              * lacks the InnerClasses attribute (decompiler artifact), so javac can't
              * resolve BAPDistanceFormatter.BAPDistance as a type.  Use Object + getValue/getUnit. */
@@ -414,7 +246,7 @@ public class BAPBridge {
     private boolean rgActiveForced = false;
     private boolean rgActiveSaved = false;
     /**
-     * Force cluster acceptance flags so VC accepts RGI BAP messages.
+     * Set the K2161 route-information acceptance state used by the HUD path.
      */
     private void forceClusterRouteInfoState(boolean active) {
         if (csRef == null) return;
@@ -461,18 +293,10 @@ public class BAPBridge {
             lastFirstManeuverIdx = -1;
             lastFirstManeuverVer = -1;
             latchedTurnToText = "";
-            resetActionBlinkState();
             synchronized (distanceToManeuverLock) {
                 hasLastDistM = false;
                 lastDistM = 0;
-                lastBarOn = false;
-                lastBar = 0;
             }
-            /* Action blink thread starts/stops with approach zone enter/exit
-             * (see update() near approachChanged) — not on session start.
-             * Outside approach zone the thread does nothing useful, and its
-             * 600 ms wakeups otherwise add scheduler pressure for the entire
-             * session even when the bargraph isn't pulsing. */
 
             /*
              * Lazy-init cluster hooks (native stream gate).
@@ -494,13 +318,19 @@ public class BAPBridge {
             forceClusterRouteInfoState(true);
 
             /*
-             * Guidance start -- BAP text overlays for HUD + VC text.
+             * Guidance start -- K2161 HUD route-guidance BAP transaction.
              *
              * 1. RGStatus(1) - FctID 17 -> triggers startSync(0) for {17,39,23,18,49}
              * 2. Complete sync(0) window: rgType(39), descriptor(23), distance(18), exitView(49)
              */
             traceBap("updateRGStatusAndActiveRGType", "1," + ACTIVE_RGTYPE);
             appConnectorNavi.updateRGStatusAndActiveRGType(1, ACTIVE_RGTYPE);
+
+            /* Keep CarPlay guidance HUD-only on this K2161 integration. */
+            traceBap("updateMapVisibility", "false,false");
+            appConnectorNavi.updateMapVisibility(false, false);
+            traceBap("updateMapPresentation", "false,false,false");
+            appConnectorNavi.updateMapPresentation(false, false, false);
 
             /* Sync(0) FctIDs: descriptor, distance, exitView */
             sendFollowStreet();                                                      /* FctID 23 */
@@ -537,7 +367,6 @@ public class BAPBridge {
             /* Lightweight stop — reset internal state only.
              * No BAP teardown. iOS sends transient route_state=0
              * during maneuver transitions; full teardown causes HUD flicker. BAP teardown happens in onShutdown() on real disconnect. */
-            stopActionBlinkThread();
             inApproachZone = false;
             lastFirstManeuverIdx = -1;
             lastFirstManeuverVer = -1;
@@ -556,10 +385,6 @@ public class BAPBridge {
         if (!initialized) return;
 
         try {
-            /* Defensive: stop action blink (it's also stopped on approach
-             * zone exit, but onShutdown can be called from non-approach
-             * states too — e.g., disconnect mid-route). */
-            stopActionBlinkThread();
 
             /*
              * Guidance stop — full BAP teardown:
@@ -634,19 +459,12 @@ public class BAPBridge {
             boolean hasAnyManeuver = (s.maneuverCount > 0);
             boolean shouldClearManeuver = (s.maneuverCount == 0) && (s.routeState <= 0);
 
-            int firstIdx = (idxs != null && idxs.length > 0) ? idxs[0] : -1;
+            int firstIdx = getFirstManeuverIndex(s);
             int type0 = (firstIdx >= 0 && s.mType != null && firstIdx < s.mType.length) ? s.mType[firstIdx] : -1;
             boolean showManeuver = ManeuverMapper.isValidType(type0);
 
-            /* Highway-aware prepare thresholds (meters).
-             *
-             * iOS sends `step.distance` (= s.mDistance[idx]) — the length of
-             * the route segment between the previous maneuver and this one.
-             * Long step (>2 km) = highway/limited-access road; short step
-             * = city.  This catches `MT_KEEP_RIGHT` / `MT_LEFT_TURN` on
-             * highways which the type-based check would miss.
-             * Fallback: when step length unknown (route setup), fall back
-             * to the maneuver-type heuristic. */
+            /* Keep a lightweight approach state for Audi maneuver-state emphasis
+             * and turn-to street text only.  It never gates the real icon or distance. */
             int rawStepM = (firstIdx >= 0 && s.mDistance != null
                     && firstIdx < s.mDistance.length) ? s.mDistance[firstIdx] : -1;
             boolean isHighway;
@@ -655,23 +473,9 @@ public class BAPBridge {
             } else {
                 isHighway = (type0 >= 0) && ManeuverMapper.isHighwayManeuver(type0);
             }
-            int prepareThreshold  = isHighway ? HIGHWAY_PREPARE_THRESHOLD_M : CITY_PREPARE_THRESHOLD_M;
-            int bargraphDenominatorM = getBargraphDenominatorM(s, firstIdx, prepareThreshold);
-            updateActionBlinkContext(
-                hasManeuverList && showManeuver && (bargraphDenominatorM > 0) && !shouldClearManeuver && !explicitClear,
-                distM, bargraphDenominatorM);
+            int prepareThreshold = isHighway ? HIGHWAY_PREPARE_THRESHOLD_M : CITY_PREPARE_THRESHOLD_M;
+            int actionThresholdM = getActionThresholdM(s, firstIdx, prepareThreshold);
 
-            /*
-             * Approach zone detection.
-             *
-             * Reset cached state only when the PRIMARY maneuver actually
-             * changes — not on every list update.  iOS sends DIRTY_MANEUVER_LIST
-             * for additions/reorders too; resetting in those cases caused a
-             * one-frame flicker to FOLLOW_STREET when distM was transiently
-             * unknown (slot reassign in the same delta).
-             *
-             * "Primary changed" = different slot index OR same slot but new
-             * mVer (LRU reassigned the slot to a different iAP2 index). */
             int currentFirstVer = (firstIdx >= 0 && s.mVer != null
                     && firstIdx < s.mVer.length) ? s.mVer[firstIdx] : -1;
             boolean primaryChanged = (firstIdx != lastFirstManeuverIdx)
@@ -681,11 +485,8 @@ public class BAPBridge {
                 lastFirstManeuverIdx = firstIdx;
                 lastFirstManeuverVer = currentFirstVer;
             }
-            boolean hasUsableDistance = (distM > 0);
-            /* ARRIVED maneuvers must always show real descriptor, not FOLLOW_STREET.
-             * distM==0 + new list resets inApproachZone → nowApproach would be false
-             * → sendFollowStreet() instead of the destination icon. Treat arrival
-             * types as always in approach zone (the reference implementation always sends a real descriptor). */
+
+            boolean hasUsableDistance = distM > 0;
             boolean isArrival = (type0 == ManeuverMapper.MT_ARRIVE_END_OF_NAVIGATION
                 || type0 == ManeuverMapper.MT_ARRIVE_AT_DESTINATION
                 || type0 == ManeuverMapper.MT_ARRIVE_END_OF_DIRECTIONS
@@ -700,23 +501,12 @@ public class BAPBridge {
                 dirty |= RouteGuidance.State.DIRTY_DIST_MAN
                        | RouteGuidance.State.DIRTY_LANE_GUIDANCE
                        | RouteGuidance.State.DIRTY_MANEUVER_TEXT
-                       | RouteGuidance.State.DIRTY_MANEUVER_ICON;  /* BAP needs icon refresh for approach/follow */
+                       | RouteGuidance.State.DIRTY_MANEUVER_ICON;
                 inApproachZone = nowApproach;
                 latchedTurnToText = "";
                 Log.i(TAG, "Approach zone " + (nowApproach ? "ENTER" : "EXIT")
                     + " (dist=" + distM + "m, highway=" + isHighway
-                    + ", prepThr=" + prepareThreshold + ", barDen=" + bargraphDenominatorM + ")");
-
-                /* Lazy-start action blink: only spin the 600 ms blink loop
-                 * while the vehicle is in the approach zone, where it drives
-                 * the BAP bargraph pulse in lockstep.  Outside the
-                 * zone the loop does nothing useful but its wakeups still
-                 * contend with the cluster compositor and TCP traffic. */
-                if (nowApproach) {
-                    startActionBlinkThread();
-                } else {
-                    stopActionBlinkThread();
-                }
+                    + ", prepThr=" + prepareThreshold + ", actionThr=" + actionThresholdM + ")");
             }
 
             if (explicitClear || shouldClearManeuver) {
@@ -726,30 +516,21 @@ public class BAPBridge {
             /*
              * 1. Maneuver icons (FctID 23)
              */
-            boolean descriptorSent = false;
             if ((dirty & (RouteGuidance.State.DIRTY_MANEUVER_ICON |
                           RouteGuidance.State.DIRTY_MANEUVER_LIST |
                           RouteGuidance.State.DIRTY_MANEUVER_COUNT)) != 0) {
                 if (explicitClear) {
                     sendNoSymbol();
-                    descriptorSent = true;
                 } else if (hasManeuverList) {
                     if (showManeuver) {
-                        if (nowApproach) {
-                            sendManeuvers(s);
-                        } else {
-                            sendFollowStreet();
-                        }
-                        descriptorSent = true;
-                    } else if (shouldClearManeuver) {
+                        sendManeuvers(s);
+                        } else if (shouldClearManeuver) {
                         sendNoSymbol();
-                        descriptorSent = true;
-                    } else if (hasAnyManeuver) {
+                        } else if (hasAnyManeuver) {
                         Log.d(TAG, "Slot data pending for list, keeping last icons (count=" + s.maneuverCount + ")");
                     }
                 } else if (shouldClearManeuver) {
                     sendNoSymbol();
-                    descriptorSent = true;
                 } else if (hasAnyManeuver) {
                     Log.d(TAG, "Maneuver list missing (count=" + s.maneuverCount + "), keep last icons");
                 }
@@ -776,43 +557,19 @@ public class BAPBridge {
                 if (transientNoDistance) {
                     boolean haveCached;
                     int cachedDistM;
-                    boolean cachedBarOn;
-                    int cachedBar;
                     synchronized (distanceToManeuverLock) {
                         haveCached = hasLastDistM;
                         cachedDistM = lastDistM;
-                        cachedBarOn = lastBarOn;
-                        cachedBar = lastBar;
                     }
                     if (haveCached) {
-                        sendDistanceToManeuverRaw(cachedDistM, cachedBarOn, cachedBar);
+                        sendDistanceToManeuverRaw(cachedDistM, false, 0);
                     } else {
                         sendDistanceToManeuverRaw(0, false, 0);
                     }
                 } else if (distM <= 0 || shouldClearManeuver) {
-                    resetActionBlinkState();
                     sendDistanceToManeuverRaw(0, false, 0);
                 } else {
-                    boolean inAction = (bargraphDenominatorM > 0) && (distM <= bargraphDenominatorM);
-                    boolean bargraphOn = false;
-                    int bargraph = 0;
-                    if (inAction) {
-                        bargraphOn = true;
-                        bargraph = (distM * 100) / bargraphDenominatorM;
-                        if (bargraph < 0) bargraph = 0;
-                        if (bargraph > 100) bargraph = 100;
-                        if (bargraph < BARGRAPH_BLINK_PERCENT) {
-                            /*
-                             * Blink zone: blink thread sends FctID 18.
-                             * Don't send from here to avoid jitter with periodic blink sends.
-                             */
-                        } else {
-                            sendDistanceToManeuverRaw(distM, bargraphOn, bargraph);
-                        }
-                    } else {
-                        actionBlinkFull = true;
-                        sendDistanceToManeuverRaw(distM, bargraphOn, bargraph);
-                    }
+                    sendDistanceToManeuverRaw(distM, false, 0);
                 }
             }
 
@@ -868,7 +625,7 @@ public class BAPBridge {
                     if (showManeuver) {
                         if (!nowApproach) {
                             bapState = 1;   /* Follow */
-                        } else if (hasUsableDistance && bargraphDenominatorM > 0 && distM <= bargraphDenominatorM) {
+                        } else if (hasUsableDistance && actionThresholdM > 0 && distM <= actionThresholdM) {
                             bapState = 4;   /* Action */
                         } else {
                             bapState = 2;   /* Prepare */
@@ -902,7 +659,7 @@ public class BAPBridge {
                  *   - highway pre-positioning (shows 1-2 km early)
                  *   - active lane choice (right at the maneuver)
                  *   - hide on exit (showing→0 once past endValidRouteCoordinate)
-                 * No `nowApproach` gate — that would override iOS's range. */
+                 * Do not add a local distance gate here; iOS owns lane visibility. */
                 boolean wantLaneGuidance = !explicitClear
                     && !shouldClearManeuver
                     && s.laneGuidanceShowing == 1;
@@ -970,7 +727,7 @@ public class BAPBridge {
     }
 
     /* ============================================================
-     * Maneuver sending (publishes the current authoritative maneuver)
+     * Maneuver Sending (current maneuver for HUD)
      * ============================================================ */
 
     /**
@@ -997,77 +754,39 @@ public class BAPBridge {
      * Send only the current (first valid) maneuver from iOS maneuverOrder.
      */
     private void sendManeuvers(RouteGuidance.State s) throws Exception {
-        int[] idxs = getManeuverIndexList(s);
-        if (idxs == null || idxs.length == 0) {
-            if (s.maneuverCount == 0) {
-                sendNoSymbol();
-            } else {
-                Log.d(TAG, "Maneuver list missing (count=" + s.maneuverCount + "), keep last icons");
-            }
+        int idx = getFirstManeuverIndex(s);
+        if (idx < 0) {
+            if (s.maneuverCount == 0) sendNoSymbol();
+            else Log.d(TAG, "No presentable authoritative maneuver yet; keeping last icon");
             return;
         }
 
-        /* Count valid maneuvers */
-        int validCount = 0;
-        int maxIdx = (s.mType != null) ? s.mType.length : 0;
-        for (int i = 0; i < idxs.length && validCount < MAX_BAP_MANEUVERS; i++) {
-            int idx = idxs[i];
-            if (idx < 0 || idx >= maxIdx) continue;
-            if (ManeuverMapper.isValidType(s.mType[idx])) validCount++;
-            else break;
+        int[] mapped = ManeuverMapper.map(
+            s.mType[idx], s.mTurnAngle[idx],
+            s.mJunctionType[idx], s.mDrivingSide[idx]);
+        int zLevel = (s.mZLevel != null && idx < s.mZLevel.length) ? s.mZLevel[idx] : 0;
+        byte[] sideStreets;
+        if (mapped[0] == ManeuverMapper.NO_INFO || mapped[0] == ManeuverMapper.NO_SYMBOL) {
+            sideStreets = new byte[0];
+        } else {
+            sideStreets = SideStreets.calcSideStreetsBytes(
+                s.mType[idx], s.mJunctionType[idx], s.mDrivingSide[idx],
+                s.mJunctionAngles[idx], s.mExitAngle[idx]);
         }
 
-        if (validCount == 0) {
-            if (s.maneuverCount == 0) {
-                sendNoSymbol();
-            } else {
-                Log.d(TAG, "No valid maneuvers yet (count=" + s.maneuverCount + "), keep last icons");
-            }
-            return;
-        }
+        Log.d(TAG, "[BAP] mapinput idx=" + idx
+            + " type=" + s.mType[idx]
+            + " turnAngle=" + s.mTurnAngle[idx]
+            + " junctionType=" + s.mJunctionType[idx]
+            + " drivingSide=" + s.mDrivingSide[idx]
+            + " distM=" + s.distManeuverM);
+        traceDescriptor(0, idx, s.mType[idx], mapped[0], mapped[1], zLevel, sideStreets);
 
-        /* Build array of CombiBAPNaviManeuverDescriptor - send all valid
-         * maneuvers in order.  START_ROUTE already maps to FOLLOW_STREET,
-         * so no skip needed; keeping pos=0 ensures BAP descriptor index
-         * stays aligned with distance[0]. */
-        CombiBAPNaviManeuverDescriptor[] arr = new CombiBAPNaviManeuverDescriptor[validCount];
-        int out = 0;
-        for (int i = 0; i < idxs.length && out < validCount; i++) {
-            int idx = idxs[i];
-            if (idx < 0 || idx >= maxIdx) continue;
-            if (!ManeuverMapper.isValidType(s.mType[idx])) break;
-            int[] mapped = ManeuverMapper.map(
-                s.mType[idx],
-                s.mTurnAngle[idx],
-                s.mJunctionType[idx],
-                s.mDrivingSide[idx]
-            );
-            int zLevel = (s.mZLevel != null && idx < s.mZLevel.length) ? s.mZLevel[idx] : 0;
-            byte[] sideStreets;
-            if (mapped[0] == ManeuverMapper.NO_INFO || mapped[0] == ManeuverMapper.NO_SYMBOL) {
-                sideStreets = new byte[0];
-            } else {
-                sideStreets = SideStreets.calcSideStreetsBytes(
-                    s.mType[idx],
-                    s.mJunctionType[idx],
-                    s.mDrivingSide[idx],
-                    s.mJunctionAngles[idx],
-                    s.mExitAngle[idx]
-                );
-            }
-            Log.d(TAG, "[BAP] mapinput idx=" + idx
-                + " type=" + s.mType[idx]
-                + " turnAngle=" + s.mTurnAngle[idx]
-                + " junctionType=" + s.mJunctionType[idx]
-                + " drivingSide=" + s.mDrivingSide[idx]
-                + " distM=" + s.distManeuverM);
-            traceDescriptor(out, idx, s.mType[idx], mapped[0], mapped[1], zLevel, sideStreets);
-            arr[out++] = createDescriptor(mapped[0], mapped[1], zLevel, sideStreets);
-        }
-
-        traceBap("updateManeuverDescriptorAndExitView", "count=" + validCount + " exit=0,0");
+        CombiBAPNaviManeuverDescriptor[] arr = new CombiBAPNaviManeuverDescriptor[1];
+        arr[0] = createDescriptor(mapped[0], mapped[1], zLevel, sideStreets);
+        traceBap("updateManeuverDescriptorAndExitView", "count=1 exit=0,0");
         appConnectorNavi.updateManeuverDescriptorAndExitView(arr, 0, 0);
-        Log.d(TAG, "Sent " + validCount + " maneuvers");
+        Log.d(TAG, "Sent 1 maneuver");
     }
 
     /* ============================================================
@@ -1152,7 +871,7 @@ public class BAPBridge {
     }
 
     /* m-cache-only check (skips lg-cache).  Used in legacy fallback paths
-     * where m-cache data is required without aliasing into lg-cache that
+     * where we need m-cache data without aliasing into lg-cache that
      * happens to occupy the same numeric slot. */
     private static boolean hasMCacheLaneForSlot(RouteGuidance.State s, int slot) {
         if (slot < 0) return false;
@@ -1254,7 +973,7 @@ public class BAPBridge {
          * each location update).  0x5204's TLV1 is iOS's
          * composedGuidanceEventIndex — an EVENT IDENTIFIER, sent for every
          * cached event including future precache.  So the active is purely
-         * 0x5201, and the lg-cache slot whose stored event must be looked up
+         * 0x5201, and we must look up the lg-cache slot whose stored event
          * id matches the active.
          *
          * lg cache slot indices are NOT the same numeric space as maneuver
@@ -1510,14 +1229,6 @@ public class BAPBridge {
     }
 
     /**
-     * Returns local timezone offset in seconds for a given UTC epoch.
-     *
-     * JVM default TZ on MHI2 is UTC, so TimeZone.getDefault() is useless.
-     * Instead: get HU raw offset (no DST) via fw, find a matching Java TZ
-     * with DST support, and use its getOffset() for DST-aware result.
-     * Fallback: HU raw offset (correct except during DST transitions).
-     */
-    /**
      * Convert UTC epoch millis to local epoch millis using HU's DST-aware offset.
      * Uses IFrameworkAccess.convertUTCTimeToLocalTime() which internally adds
      * utcOffsetMilliseconds (timezone + DST from UTCOffset DSI callback).
@@ -1525,20 +1236,6 @@ public class BAPBridge {
      */
     private static long convertUtcToLocalMs(long utcMs) {
         return utcMs;
-    }
-
-    /**
-     * Send ExitView with toggling variant to force AppConnectorNavi to always
-     * consider it "changed" (sendStatusIfChanged).  Without this toggle,
-     * FctID 49 is skipped when variant+num match the previous send, causing
-     * FSG sync(1) for {23,18,49} to stall and blocking descriptor delivery.
-     */
-    private void sendExitView() {
-        exitViewNum = 0;
-        exitViewSendCount++;
-        int variant = (exitViewSendCount % 2 == 0) ? EXITVIEW_EU : EXITVIEW_NAR;
-        traceBap("updateExitView", variant + "," + exitViewNum);
-        appConnectorNavi.updateExitView(variant, exitViewNum);
     }
 
     private static String hexBytes(byte[] b) {
@@ -1611,16 +1308,35 @@ public class BAPBridge {
 
     private static int getFirstManeuverIndex(RouteGuidance.State s) {
         int maxIdx = (s.mType != null) ? s.mType.length : 0;
-        if (s.maneuverOrder != null && s.maneuverOrder.length == 0) {
-            return -1;
-        }
-        if (s.maneuverOrder != null && s.maneuverOrder.length > 0) {
-            for (int i = 0; i < s.maneuverOrder.length; i++) {
-                int idx = s.maneuverOrder[i];
-                if (idx >= 0 && idx < maxIdx) return idx;
+        if (s.maneuverOrder == null || s.maneuverOrder.length == 0) return -1;
+
+        int first = -1;
+        int firstOrderPos = -1;
+        for (int i = 0; i < s.maneuverOrder.length; i++) {
+            int idx = s.maneuverOrder[i];
+            if (idx >= 0 && idx < maxIdx && ManeuverMapper.isValidType(s.mType[idx])) {
+                first = idx;
+                firstOrderPos = i;
+                break;
             }
         }
-        return -1;
+        if (first < 0) return -1;
+
+        /* iOS commonly puts START_ROUTE at the head of the authoritative list.
+         * Keep it in the cache/order, but present the first real maneuver when one
+         * is already available. */
+        if (s.mType[first] == ManeuverMapper.MT_START_ROUTE) {
+            for (int i = firstOrderPos + 1; i < s.maneuverOrder.length; i++) {
+                int idx = s.maneuverOrder[i];
+                if (idx >= 0 && idx < maxIdx
+                        && ManeuverMapper.isValidType(s.mType[idx])
+                        && s.mType[idx] != ManeuverMapper.MT_START_ROUTE) {
+                    return idx;
+                }
+            }
+            return -1;
+        }
+        return first;
     }
 
     private static int[] getManeuverIndexList(RouteGuidance.State s) {
@@ -1634,26 +1350,19 @@ public class BAPBridge {
          * Do not synthesize [0..maneuver_count) when iOS has not published
          * an explicit maneuver_list yet.  During reroute, count often arrives
          * before the new slot payloads; falling back to numeric slot order can
-         * briefly expose stale pre-reroute slots to BAP and c_render.
+         * briefly expose stale pre-reroute slots to the HUD BAP path.
          */
         return null;
     }
 
-    private static int getBargraphDenominatorM(RouteGuidance.State s, int manIdx, int prepareThresholdM) {
+    private static int getActionThresholdM(RouteGuidance.State s, int manIdx, int prepareThresholdM) {
         if (manIdx < 0 || s == null || s.mDistance == null || manIdx >= s.mDistance.length) {
             return -1;
         }
-        int policyCap = (prepareThresholdM * BARGRAPH_ACTION_PERCENT_OF_PREPARE) / 100;
+        int policyCap = (prepareThresholdM * ACTION_PERCENT_OF_PREPARE) / 100;
         if (policyCap <= 0) return -1;
-        int denominator = s.mDistance[manIdx];
-
-        /*
-         * Some third-party navigation apps omit initialTravelEstimates.
-         * Unknown step length -> use the same policy window as the capped case.
-         */
-        if (denominator <= 0 || denominator > policyCap) {
-            return policyCap;
-        }
-        return denominator;
+        int stepDistance = s.mDistance[manIdx];
+        if (stepDistance <= 0 || stepDistance > policyCap) return policyCap;
+        return stepDistance;
     }
 }
