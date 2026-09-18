@@ -1,31 +1,38 @@
 # Changelog
 
-## v1.1.0 — HUD presentation update
-
-Status: vehicle-tested development version; public release pending.
+## v1.1 — vehicle-tested K2161 release
 
 ### Changed
 
-- revised HUD maneuver presentation to keep the real current maneuver active instead of substituting a synthetic follow-street state
-- revised numeric-distance presentation so distance remains associated with the active maneuver
-- added route-guidance ownership/presentation changes intended to preserve HUD guidance while preventing CarPlay route-guidance presentation from taking over the Virtual Cockpit
-- added reconnect/session recovery changes
+- presents the first real authoritative maneuver instead of treating iOS `START_ROUTE` as the HUD maneuver when a real maneuver is already available
+- keeps the real current maneuver active at long range rather than substituting a distance-based `FOLLOW_STREET` placeholder
+- keeps the maneuver distance numeric; the BAP distance bargraph is not used
+- for positive metric maneuver distances below 1 km, sends the direct K2161 unit-0 value (`meters * 10`) instead of accepting the stock turn formatter's short-range clamp
+- adds generation-guarded RGI subscription recovery for wireless reconnects that occur without a new `0x1D00 StartIdentification`
+- after 10 seconds of RGI silence, the next normal stock `0x2700` opportunity can soft-rearm the `0x5200` subscription; retry cadence remains 2 s for the first five attempts and 30 s thereafter
+- preserves the stock-safe send sequence: stock `0x2700` handling -> real `MsgReply` -> custom component-qualified `0x5200`
+- keeps CarPlay route guidance HUD-only on this K2161 integration
+- retains `0x5204` lane-guidance parsing/caching/BAP output; live lane rendering remains unverified because no qualifying event was encountered
 
-### Known issues
+### Vehicle validation
 
-- the first maneuver can be missing when guidance starts; the following maneuver appears after the first maneuver is completed
-- CarPlay reconnect can succeed without restoring HUD RGI, including when a route was already active
-- HUD distance was observed to stop at approximately 50 m instead of counting down closer to zero
-- Virtual Cockpit behavior has not yet been vehicle-validated
+- first actionable maneuver: PASS
+- sub-1 km metric distance: PASS
+- wireless reconnect recovery: PASS
+- maneuver transitions: PASS
+- side-street/junction geometry: PASS
+- Virtual Cockpit CarPlay graphical route guidance: not produced by this release
+- lane guidance: implemented, not yet live-tested
 
-These issues were discovered during v1.1.0 vehicle testing and are candidates for the next corrective update.
+### Known observations
 
-## v1.0.0 — Initial public release
+- one tested route start showed the correct first maneuver symbol with destination distance until the first maneuver was passed; later maneuver distances were correct
+- after reconnect, the last pre-disconnect maneuver may remain visible briefly until fresh authoritative route state arrives
+
+## v1.0.0 — initial public release
 
 - Apple Maps factory-HUD maneuver arrows and numeric distance
 - Google Maps factory-HUD maneuver arrows and numeric distance
 - route-end HUD clear
 - sustained iAP2 RGI reception on K2161 after runtime activation of stock group `0x52`
 - source release for `MHI2_ER_AUG22_K2161`, MU 1421
-
-Known limitations in v1.0.0 include the tested Waze session not exposing a normal structured maneuver stream, no observed `0x5204` lane-guidance frame, and unvalidated native Audi navigation hand-back without reboot.
