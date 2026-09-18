@@ -9,39 +9,36 @@ CarPlay turn-by-turn route guidance for Audi **MIB2 High / MHI2**, using Apple i
 - Firmware: `MHI2_ER_AUG22_K2161`
 - MU software: `1421`
 
-## v1.0.0 status
+## v1.1 status
+
+v1.1 is the current vehicle-tested release for K2161.
 
 Validated on the vehicle:
 
-- **Apple Maps:** maneuver arrows, numeric distance updates and route-end clear on the factory HUD
-- **Google Maps:** maneuver arrows, numeric distance updates and route-end clear on the factory HUD
-- sustained iAP2 RGI reception after runtime activation of stock group `0x52`
-- clean route-guidance deactivation in the tested Apple Maps and Google Maps sessions
+- Apple Maps and Google Maps route guidance on the factory HUD
+- real maneuver symbols from the authoritative CarPlay maneuver list
+- first actionable maneuver at route start; the `START_ROUTE` pseudo-step is not used as the HUD maneuver when a real maneuver is already available
+- numeric maneuver distance, including direct metric values below 1 km instead of the stock formatter's 50 m floor
+- maneuver transitions after completing a turn
+- side-street / junction geometry in the HUD maneuver graphic
+- automatic recovery of RGI after a wireless CarPlay disconnect/reconnect that does not create a new iAP2 identification session
+- route-end clear and normal BAP ownership hand-back behavior used by the existing integration
 
-Known limitations:
+### Display scope
 
-- **Waze:** in the tested session, `sourceSupportsRouteGuidance=0`; no normal `0x5202` maneuver stream was observed and no HUD arrows were produced
-- **Lane guidance (`0x5204`):** transport and parser support are present, but no real lane-guidance frame was observed in the validation routes
-- **Native Audi navigation hand-back:** starting native Audi guidance after CarPlay guidance without rebooting the MMI has not yet been validated
-- Virtual Cockpit graphical guidance is not claimed by this release; the validated output is the factory HUD
+This release is **HUD-only**. CarPlay route guidance is not output as graphical route guidance in the Virtual Cockpit. While CarPlay owns route guidance, the K2161 integration keeps map visibility/presentation disabled for this path.
 
-## v1.1.0 development status
+### Lane guidance
 
-v1.1.0 changes the HUD presentation behavior rather than being a transport-only update. The current vehicle-tested implementation:
+`0x5204` lane-guidance transport, caching, event selection and BAP output are implemented. The code follows iOS `laneGuidanceIndex` / `laneGuidanceShowing` state and can publish `CombiBAPNaviLaneGuidanceData` to K2161.
 
-- keeps the real current maneuver icon active instead of substituting a synthetic follow-street state
-- keeps numeric distance associated with the active maneuver
-- includes revised route-guidance ownership/presentation behavior intended to keep CarPlay guidance out of the Virtual Cockpit while preserving HUD output
-- includes reconnect/session recovery work
+No qualifying real lane-guidance event was encountered during the v1.1 vehicle test, so **lane rendering is implemented but not yet live-validated**.
 
-Vehicle testing also exposed known issues that are intentionally tracked for the next corrective update:
+### Known observations
 
-- **initial maneuver:** the first maneuver can be missing when guidance starts; the next maneuver appears normally after completing the first one
-- **reconnect recovery:** CarPlay can reconnect while HUD RGI does not resume automatically, including when a route was already active
-- **short-range distance:** HUD distance was observed to stop at approximately 50 m instead of continuing toward zero
-- **Virtual Cockpit:** the v1.1.0 ownership/presentation behavior has not yet been vehicle-validated
-
-These are known v1.1.0 issues, not changes to the v1.0.0 release.
+- On one route start, the first real maneuver symbol was correct but the HUD initially showed the destination distance instead of the first-maneuver distance. After passing that first maneuver, subsequent maneuver distances behaved normally.
+- After a wireless reconnect, the previous maneuver can remain visible briefly while iOS rebuilds and republishes fresh authoritative route state. RGI recovery itself was successful.
+- Waze remains dependent on whether the iOS/Waze session exposes the structured CarPlay RGI stream. A previously tested Waze session reported `sourceSupportsRouteGuidance=0` and produced no normal `0x5202` maneuver stream.
 
 See [CHANGELOG.md](CHANGELOG.md) and [vehicle validation](docs/validation.md).
 
@@ -101,10 +98,6 @@ This repository contains source and integration documentation, not an automated 
 3. the Java bundle registered with the K2161 LSD/OSGi runtime.
 
 See [installation requirements](docs/installation.md).
-
-## Validation
-
-One validated session captured **225 `0x5201` + 23 `0x5202` messages**, with no RGI `Invalid packet` failures and no receive-list exhaustion. See [validation](docs/validation.md).
 
 ## Credits
 
