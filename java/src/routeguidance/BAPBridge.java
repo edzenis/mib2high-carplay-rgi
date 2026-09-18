@@ -96,7 +96,7 @@ public class BAPBridge {
             }
         }
 
-        /* v1.1 never uses the BAP distance bargraph. */
+        /* Keep the BAP distance bargraph disabled for direct RGI output. */
         FormattedDistance fd = formatDistanceToTurn(meters);
         traceBap("updateDistanceToNextManeuver",
             fd.value + "," + fd.unit + ",false,0");
@@ -524,9 +524,9 @@ public class BAPBridge {
                 } else if (hasManeuverList) {
                     if (showManeuver) {
                         sendManeuvers(s);
-                        } else if (shouldClearManeuver) {
+                    } else if (shouldClearManeuver) {
                         sendNoSymbol();
-                        } else if (hasAnyManeuver) {
+                    } else if (hasAnyManeuver) {
                         Log.d(TAG, "Slot data pending for list, keeping last icons (count=" + s.maneuverCount + ")");
                     }
                 } else if (shouldClearManeuver) {
@@ -543,7 +543,7 @@ public class BAPBridge {
             /*
              * 3. Distance to maneuver (FctID 18)
              *
-             * Distance is converted with native BAPDistanceFormatter rules.
+             * Sub-kilometer metric values are encoded directly; other values use the OEM formatter.
              */
             if ((dirty & (RouteGuidance.State.DIRTY_DIST_MAN |
                           RouteGuidance.State.DIRTY_MANEUVER_ICON |
@@ -729,16 +729,6 @@ public class BAPBridge {
     /* ============================================================
      * Maneuver Sending (current maneuver for HUD)
      * ============================================================ */
-
-    /**
-     * Send FOLLOW_STREET descriptor.
-     */
-    private void sendFollowStreet() throws Exception {
-        CombiBAPNaviManeuverDescriptor[] arr = new CombiBAPNaviManeuverDescriptor[1];
-        arr[0] = createDescriptor(ManeuverMapper.FOLLOW_STREET, ManeuverMapper.DIR_STRAIGHT, 0, new byte[0]);
-        traceBap("updateManeuverDescriptorAndExitView", "count=1 FOLLOW_STREET exit=0,0");
-        appConnectorNavi.updateManeuverDescriptorAndExitView(arr, 0, 0);
-    }
 
     /**
      * Send NO_SYMBOL descriptor.
