@@ -1,26 +1,38 @@
 # Compatibility
 
-## Validated
+## Vehicle-tested target
 
-| Item | Status |
-|---|---|
-| Audi Q7 4M | validated |
-| MIB2 High / MHI2 | validated |
-| `MHI2_ER_AUG22_K2161` | validated |
-| MU 1421 | validated |
-| Apple Maps | HUD guidance validated |
-| Google Maps | HUD guidance validated |
-| Waze | no usable normal maneuver stream in the tested session |
-| `0x5204` lane guidance | transport/parser present; no live frame observed |
+v1.1 has been vehicle-tested on:
 
-## Firmware specificity
+- Audi Q7 4M
+- MIB2 High / MHI2
+- `MHI2_ER_AUG22_K2161`
+- MU 1421
 
-The native hook uses exact, validated K2161 driver structures and offsets. Another MHI2 firmware may have a different stock driver build, table layout, symbols or call-site offsets.
+The native hook uses K2161-specific offsets and validates the expected stock driver layout. Do not infer compatibility from the shared MHI2 product family alone.
 
-Do not infer compatibility from the shared MHI2 product family alone.
+## Navigation applications
+
+### Apple Maps
+
+Factory-HUD route guidance is vehicle-tested.
+
+### Google Maps
+
+Factory-HUD route guidance is vehicle-tested, including maneuver transitions, short-range distance updates and junction/side-street geometry.
+
+### Waze
+
+A previously tested Waze session reported `sourceSupportsRouteGuidance=0` and did not expose the normal structured `0x5202` maneuver stream. No HUD maneuver output was produced in that session. Compatibility therefore depends on the RGI stream exposed by the iOS/Waze combination rather than on a separate Waze-specific renderer in this project.
+
+## Wireless CarPlay adapters
+
+v1.1 includes recovery for adapters that can reconnect CarPlay without presenting a fresh iAP2 `0x1D00 StartIdentification`. A 10-second RGI-silence detector can soft-rearm the existing subscription at the next stock-safe `0x2700` opportunity. This path was vehicle-tested successfully.
 
 ## Virtual Cockpit
 
-v1.0.0 does not claim validated Virtual Cockpit graphical route-guidance output. The validated display target is the factory HUD.
+v1.1 targets the **factory HUD**. It does not output CarPlay graphical route guidance to the Virtual Cockpit. The integration keeps the K2161 map visibility/presentation path disabled while CarPlay owns route guidance.
 
-v1.1.0 introduces revised ownership/presentation behavior intended to preserve factory HUD guidance while preventing CarPlay route-guidance presentation from taking over the Virtual Cockpit. That v1.1.0 behavior has not yet been vehicle-validated.
+## Lane guidance
+
+`0x5204` parsing, lane-event caching, active-event resolution and BAP lane output are implemented. No qualifying real lane-guidance event was encountered during the v1.1 vehicle test, so the visual result remains unvalidated.
