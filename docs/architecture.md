@@ -1,65 +1,70 @@
 # Architecture
 
-## End-to-end path
+## Data path
 
 ```text
 iPhone navigation app
-  -> Apple iAP2 Route Guidance Information
-  -> stock K2161 ipod-drvr-iap2.so
-  -> stock runtime control-message validation
-  -> K2161 receive observer at driver_base + 0x11428
-  -> RGI parser/cache
-  -> localhost TCP bus (127.0.0.1:19810)
-  -> Java RouteGuidance
-  -> BAPBridge
-  -> de.audi.atip.interapp.combi.bap.CombiBAPServiceNavi
-  -> factory Audi HUD
+        |
+        v
+iAP2 Route Guidance (0x5200..0x5204)
+        |
+        v
+stock K2161 ipod-drvr-iap2.so
+        |
+        +-- runtime group 0x52 message-table activation
+        |
+        v
+native RGI receive/parser/cache
+        |
+        v
+localhost native -> Java bus
+        |
+        v
+RouteGuidance state
+        |
+        v
+BAPBridge
+        |
+        v
+K2161 CombiBAPServiceNavi
+        |
+        v
+factory Audi HUD
 ```
 
-## Why K2161 needs the runtime message-table patch
+The stock iAP2 driver is not patched on disk. The preload library validates the expected K2161 layout and activates the required stock message-table entries in writable process memory.
 
-The K2161 stock iAP2 driver's control-message table has an empty group `0x52` entry. Without a valid group definition, incoming Route Guidance messages reach the stock unsupported-message path and return `EINVAL (22)`. During vehicle testing this caused receive progress to stop after a repeatable initial burst.
+## iAP2 subscription
 
-The native hook validates the expected stock table/layout first and then installs an in-memory definition for group `0x52`:
+The custom `0x5200` StartRouteGuidanceUpdates request is component-qualified for component `0x0010`. The send path deliberately preserves the stock callback order:
 
 ```text
-index 1 -> 0x5201  flags 0x00000002
-index 2 -> 0x5202  flags 0x00000002
-index 4 -> 0x5204  flags 0x00000002
+incoming 0x2700
+-> stock GPS handling
+-> stock LocationInformation / real MsgReply
+-> custom 0x5200
 ```
 
-The sender is fail-closed: Route Guidance is not armed unless the table patch verifies successfully.
+Retries are sent only from a proven stock callback context; the retry worker merely marks an attempt as due.
 
-No stock iAP2 driver file is modified on disk.
+## Reconnect recovery
 
-## Route-guidance startup
+A real `0x1D00 StartIdentification` remains the authoritative new-session boundary. Some wireless adapters reconnect without generating a new `0x1D00`, so v1.1 additionally tracks the last valid `0x5201`/`0x5202`/`0x5204` receive time. After 10 seconds of RGI silence, a subsequent stock `0x2700` can create a same-session soft re-arm with a new retry generation.
 
-The required send ordering is intentionally preserved:
+## Java/BAP ownership
 
-```text
-iPhone 0x2700
-  -> stock gps_info_send
-  -> stock 0xFFFB LocationInformation
-  -> real MsgReply
-  -> custom 0x5200 StartRouteGuidanceUpdates
-```
+While CarPlay owns route guidance, the Java layer gates stock route-guidance writes so the native navigation service cannot overwrite the CarPlay BAP state. On release of ownership, the stock service is restored.
 
-The custom `0x5200` is not sent ahead of the stock behavior.
+The K2161 maneuver path uses the combined maneuver/ExitView transaction and publishes numeric maneuver distance separately.
 
-## Java side
+## Display behavior
 
-`Activator` tracks the exact K2161 service:
+v1.1 always presents the authoritative real maneuver; distance does not gate whether the maneuver symbol exists. `FOLLOW_STREET` is retained only for the K2161 startup sync transaction or when the actual mapped maneuver is a straight/follow-road maneuver, not as a far-distance placeholder.
 
-```text
-de.audi.atip.interapp.combi.bap.CombiBAPServiceNavi
-```
+The BAP distance bargraph is disabled. Positive metric maneuver distances below 1 km use the direct K2161 unit-0 encoding (`meters * 10`).
 
-The TerminalMode lifecycle adapter tracks:
+The public release is HUD-only: CarPlay route guidance is not rendered as graphical navigation in the Virtual Cockpit.
 
-```text
-de.audi.atip.interapp.terminalmode.ITerminalModeUpdateService
-```
+## Lane guidance
 
-and validates the exact K2161 implementation before reflectively acquiring its `IDeviceManager`.
-
-`K2161RouteGuidanceOwnership` and `K2161GatedCombiService` arbitrate access to the stock navigation BAP service while CarPlay route guidance owns the HUD state.
+`0x5204` events are cached independently from maneuver slots. `0x5201` supplies the current lane-guidance event/index and display intent. Java resolves the active cached event by ID and calls K2161 `updateLaneGuidance(...)` only when iOS indicates that lane guidance should be shown.
