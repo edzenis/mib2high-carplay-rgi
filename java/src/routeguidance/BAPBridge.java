@@ -2,7 +2,8 @@
  * CarPlay Route Guidance - BAP Bridge
  *
  * Translates real CarPlay route-guidance state to the exact K2161 BAP API.
- * Scope: factory HUD route guidance; no graphical Virtual Cockpit renderer.
+ * Scope: factory HUD plus the cluster's shared/simple VC route-guidance presentation.
+ * No custom Virtual Cockpit graphics renderer is used by this bridge.
  *
  */
 package com.luka.carplay.routeguidance;
@@ -30,6 +31,19 @@ public class BAPBridge {
      * AppConnectorNavi FSG sync flow, not for view mode selection. */
     private static final int ACTIVE_RGTYPE = 0;  /* RGI -- native BAP HUD icons. */
     private static final boolean BAP_TRACE_ENABLED = true;
+
+    /*
+     * K2161 shares the maneuver descriptor/distance BAP transaction between HUD and
+     * the simple VC/FPK route-guidance presentation.  This compile-time switch controls
+     * whether we leave that VC presentation available or apply the existing best-effort
+     * map-presentation suppression.  It intentionally does not gate the shared maneuver
+     * descriptor/distance writes because the HUD requires those same writes.
+     */
+    private static final boolean VC_RGI_ENABLED = true;
+
+    /* Allow small rounding differences before treating the top-level distance as belonging
+     * to a different (typically START_ROUTE) presentation state. */
+    private static final int PRESENTATION_DISTANCE_TOLERANCE_M = 100;
 
     /* BAP supports three maneuver slots, but publish only the current one. */
     private static final int MAX_BAP_MANEUVERS = 1;
@@ -79,6 +93,29 @@ public class BAPBridge {
         FormattedDistance(int value, int unit) {
             this.value = value;
             this.unit = unit;
+        }
+    }
+
+    /* One authoritative maneuver selection for descriptor, distance and presentation state. */
+    private static final class PresentationManeuver {
+        final int index;
+        final int type;
+        final int distanceM;
+        final int liveDistanceM;
+        final int slotDistanceM;
+        final boolean skippedStartRoute;
+        final boolean usedSlotDistance;
+
+        PresentationManeuver(int index, int type, int distanceM,
+                             int liveDistanceM, int slotDistanceM,
+                             boolean skippedStartRoute, boolean usedSlotDistance) {
+            this.index = index;
+            this.type = type;
+            this.distanceM = distanceM;
+            this.liveDistanceM = liveDistanceM;
+            this.slotDistanceM = slotDistanceM;
+            this.skippedStartRoute = skippedStartRoute;
+            this.usedSlotDistance = usedSlotDistance;
         }
     }
 
@@ -159,9 +196,21 @@ public class BAPBridge {
         Log.d(TAG, "[BAP] " + call + "(" + args + ")");
     }
 
+    /** Configure the optional VC presentation without touching the shared HUD transaction. */
+    private void configureVcPresentation() {
+        if (VC_RGI_ENABLED) {
+            Log.i(TAG, "VC RGI enabled: shared cluster maneuver presentation left available");
+            return;
+        }
+
+        Log.i(TAG, "VC RGI disabled: applying best-effort map presentation suppression");
+        suppressVcMapPresentation();
+    }
+
     /**
-     * Keep CarPlay guidance HUD-only without allowing an optional VC-map BAP
-     * write failure to abort the route-guidance startup transaction.
+     * Best-effort suppression of VC map presentation.  K2161's simple maneuver panel
+     * can still interpret shared route-guidance BAP fields, so this is deliberately
+     * separate from the maneuver descriptor/distance transaction required by HUD.
      */
     private void suppressVcMapPresentation() {
         try {
@@ -348,8 +397,8 @@ public class BAPBridge {
             traceBap("updateRGStatusAndActiveRGType", "1," + ACTIVE_RGTYPE);
             appConnectorNavi.updateRGStatusAndActiveRGType(1, ACTIVE_RGTYPE);
 
-            /* Keep CarPlay guidance HUD-only on this K2161 integration. */
-            suppressVcMapPresentation();
+            /* Keep HUD active and configure whether VC may consume the shared RGI presentation. */
+            configureVcPresentation();
 
             /* Sync(0) FctIDs: descriptor, distance, exitView */
             sendNoSymbol();                                                         /* FctID 23 */
@@ -472,15 +521,22 @@ public class BAPBridge {
             boolean explicitClear = ((dirty & RouteGuidance.State.DIRTY_MANEUVER_COUNT) != 0)
                 && (s.maneuverCount == 0)
                 && (s.routeState <= 0);
-            int distM = s.distManeuverM;
             int[] idxs = getManeuverIndexList(s);
             boolean hasManeuverList = (idxs != null && idxs.length > 0);
             boolean hasAnyManeuver = (s.maneuverCount > 0);
             boolean shouldClearManeuver = (s.maneuverCount == 0) && (s.routeState <= 0);
 
-            int firstIdx = getFirstManeuverIndex(s);
-            int type0 = (firstIdx >= 0 && s.mType != null && firstIdx < s.mType.length) ? s.mType[firstIdx] : -1;
+            PresentationManeuver presentation = resolvePresentationManeuver(s);
+            int firstIdx = presentation.index;
+            int type0 = presentation.type;
+            int distM = presentation.distanceM;
             boolean showManeuver = ManeuverMapper.isValidType(type0);
+
+            if (presentation.usedSlotDistance) {
+                Log.d(TAG, "Presentation distance aligned to selected maneuver idx=" + firstIdx
+                    + " live=" + presentation.liveDistanceM + "m slot="
+                    + presentation.slotDistanceM + "m");
+            }
 
             /* Keep a lightweight approach state for Audi maneuver-state emphasis
              * and turn-to street text only.  It never gates the real icon or distance. */
@@ -542,7 +598,7 @@ public class BAPBridge {
                     sendNoSymbol();
                 } else if (hasManeuverList) {
                     if (showManeuver) {
-                        sendManeuvers(s);
+                        sendManeuvers(s, firstIdx);
                     } else if (shouldClearManeuver) {
                         sendNoSymbol();
                     } else if (hasAnyManeuver) {
@@ -600,7 +656,7 @@ public class BAPBridge {
                 String road;
                 boolean turnTextMode = inApproachZone && !explicitClear && !shouldClearManeuver;
                 if (turnTextMode) {
-                    int idx = getFirstManeuverIndex(s);
+                    int idx = firstIdx;
                     String candidate = "";
                     if (idx >= 0) {
                         if (s.mExitInfo != null && idx < s.mExitInfo.length
@@ -738,7 +794,11 @@ public class BAPBridge {
             }
 
 
-            Log.d(TAG, "Update: dist=" + distM + "m maneuvers=" + Math.min(s.maneuverCount, MAX_BAP_MANEUVERS));
+            Log.d(TAG, "Update: dist=" + distM + "m maneuvers="
+                + Math.min(s.maneuverCount, MAX_BAP_MANEUVERS)
+                + " selectedIdx=" + firstIdx
+                + " distSource=" + (presentation.usedSlotDistance ? "slot" : "live")
+                + " startSkipped=" + presentation.skippedStartRoute);
 
         } catch (Exception e) {
             Log.e(TAG, "update error", e);
@@ -772,8 +832,7 @@ public class BAPBridge {
     /**
      * Send only the current (first valid) maneuver from iOS maneuverOrder.
      */
-    private void sendManeuvers(RouteGuidance.State s) throws Exception {
-        int idx = getFirstManeuverIndex(s);
+    private void sendManeuvers(RouteGuidance.State s, int idx) throws Exception {
         if (idx < 0) {
             if (s.maneuverCount == 0) sendNoSymbol();
             else Log.d(TAG, "No presentable authoritative maneuver yet; keeping last icon");
@@ -1339,6 +1398,58 @@ public class BAPBridge {
             if (tail.length() > 0) return tail;
         }
         return v;
+    }
+
+    private static int getAuthoritativeHeadManeuverIndex(RouteGuidance.State s) {
+        int maxIdx = (s != null && s.mType != null) ? s.mType.length : 0;
+        if (s == null || s.maneuverOrder == null || s.maneuverOrder.length == 0) return -1;
+
+        for (int i = 0; i < s.maneuverOrder.length; i++) {
+            int idx = s.maneuverOrder[i];
+            if (idx >= 0 && idx < maxIdx && ManeuverMapper.isValidType(s.mType[idx])) {
+                return idx;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Resolve one presentation maneuver and keep its descriptor/distance coherent.
+     *
+     * iOS can leave START_ROUTE at the head of the authoritative list while a real
+     * actionable maneuver is already available.  We intentionally skip START_ROUTE
+     * for the descriptor.  During that interval the top-level 0x5201 distance can
+     * still describe the head/current iOS presentation state rather than the real
+     * maneuver we selected.  If the selected 0x5202 slot has a usable distance and
+     * the live value is absent or implausibly larger, use the slot distance until
+     * iOS advances the authoritative head and the normal live countdown takes over.
+     */
+    private static PresentationManeuver resolvePresentationManeuver(RouteGuidance.State s) {
+        int idx = getFirstManeuverIndex(s);
+        int type = (idx >= 0 && s != null && s.mType != null && idx < s.mType.length)
+            ? s.mType[idx] : -1;
+        int liveDist = (s != null) ? s.distManeuverM : -1;
+        int slotDist = (idx >= 0 && s != null && s.mDistance != null && idx < s.mDistance.length)
+            ? s.mDistance[idx] : -1;
+        int resolvedDist = liveDist;
+        boolean skippedStartRoute = false;
+        boolean usedSlotDistance = false;
+
+        int headIdx = getAuthoritativeHeadManeuverIndex(s);
+        if (headIdx >= 0 && idx >= 0 && headIdx != idx
+                && s.mType[headIdx] == ManeuverMapper.MT_START_ROUTE) {
+            skippedStartRoute = true;
+            if (slotDist > 0) {
+                long maxPlausibleLive = (long) slotDist + PRESENTATION_DISTANCE_TOLERANCE_M;
+                if (liveDist <= 0 || (long) liveDist > maxPlausibleLive) {
+                    resolvedDist = slotDist;
+                    usedSlotDistance = true;
+                }
+            }
+        }
+
+        return new PresentationManeuver(idx, type, resolvedDist, liveDist, slotDist,
+            skippedStartRoute, usedSlotDistance);
     }
 
     private static int getFirstManeuverIndex(RouteGuidance.State s) {

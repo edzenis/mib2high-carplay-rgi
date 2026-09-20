@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.0-dev.3 — presentation alignment + VC switch
+
+### Changed
+
+- resolves one authoritative presentation maneuver for descriptor, distance and turn-to text
+- when iOS keeps `START_ROUTE` at the head while a later real maneuver is presented, rejects an absent or implausibly larger top-level maneuver distance when the selected 0x5202 slot has a usable distance
+- adds presentation-distance diagnostics showing live versus selected-slot distance and which source was sent
+- adds `VC_RGI_ENABLED` as a compile-time switch; enabled leaves the shared K2161 maneuver presentation available to the VC/FPK, while disabled applies the existing best-effort map visibility/presentation suppression
+- keeps the shared maneuver descriptor/distance BAP transaction active in both modes because the HUD requires the same route-guidance writes
+
+### Validation status
+
+- source-reviewed development checkpoint; Java/QNX build and vehicle validation pending
+- VC enable/disable behavior still requires vehicle validation because K2161 shares route-guidance BAP state between HUD and the simple VC presentation
+
 ## v1.1 — vehicle-tested K2161 release
 
 ### Changed
