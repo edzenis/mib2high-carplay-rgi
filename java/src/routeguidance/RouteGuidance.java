@@ -38,6 +38,7 @@ public class RouteGuidance implements CarplayBus.Listener {
 
     /* State */
     private BAPBridge bap;
+    private Object naviService;
     private volatile boolean running;
     private boolean rgActive = false;
     private boolean hasRouteUpdate = false;
@@ -239,6 +240,7 @@ public class RouteGuidance implements CarplayBus.Listener {
      * Initialize with BAP service.
      */
     public boolean init(Object naviService) {
+        this.naviService = naviService;
         bap = new BAPBridge();
         if (!bap.init(naviService)) {
             Log.e(TAG, "BAPBridge init failed");
@@ -255,6 +257,26 @@ public class RouteGuidance implements CarplayBus.Listener {
      */
     public void start() {
         if (running) return;
+
+        /* stop() performs a full BAPBridge dispose so native navigation gets
+         * its raw service back. Recreate the bridge when CarPlay becomes the
+         * active device again, using the same tracked CombiBAPServiceNavi. */
+        if (bap == null) {
+            Object service = naviService;
+            if (service == null) {
+                Log.e(TAG, "Start failed: no BAP navigation service");
+                return;
+            }
+
+            BAPBridge replacement = new BAPBridge();
+            if (!replacement.init(service)) {
+                Log.e(TAG, "Start failed: BAPBridge reinit failed");
+                return;
+            }
+            bap = replacement;
+            Log.i(TAG, "BAPBridge reinitialized after lifecycle stop");
+        }
+
         running = true;
         rgActive = false;
         hasRouteUpdate = false;
