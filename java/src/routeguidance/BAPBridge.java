@@ -159,6 +159,28 @@ public class BAPBridge {
         Log.d(TAG, "[BAP] " + call + "(" + args + ")");
     }
 
+    /**
+     * Keep CarPlay guidance HUD-only without allowing an optional VC-map BAP
+     * write failure to abort the route-guidance startup transaction.
+     */
+    private void suppressVcMapPresentation() {
+        try {
+            traceBap("updateMapVisibility", "false,false");
+            appConnectorNavi.updateMapVisibility(false, false);
+        } catch (Throwable t) {
+            Log.w(TAG, "VC map visibility suppression failed: "
+                + t.getClass().getName() + ": " + t.getMessage());
+        }
+
+        try {
+            traceBap("updateMapPresentation", "false,false,false");
+            appConnectorNavi.updateMapPresentation(false, false, false);
+        } catch (Throwable t) {
+            Log.w(TAG, "VC map presentation suppression failed: "
+                + t.getClass().getName() + ": " + t.getMessage());
+        }
+    }
+
     private void traceDescriptor(int outPos, int idx, int type, int main, int dir, int zLevel, byte[] sideStreets) {
         if (!BAP_TRACE_ENABLED) return;
         StringBuffer sb = new StringBuffer();
@@ -327,13 +349,10 @@ public class BAPBridge {
             appConnectorNavi.updateRGStatusAndActiveRGType(1, ACTIVE_RGTYPE);
 
             /* Keep CarPlay guidance HUD-only on this K2161 integration. */
-            traceBap("updateMapVisibility", "false,false");
-            appConnectorNavi.updateMapVisibility(false, false);
-            traceBap("updateMapPresentation", "false,false,false");
-            appConnectorNavi.updateMapPresentation(false, false, false);
+            suppressVcMapPresentation();
 
             /* Sync(0) FctIDs: descriptor, distance, exitView */
-            sendFollowStreet();                                                      /* FctID 23 */
+            sendNoSymbol();                                                         /* FctID 23 */
             sendDistanceToManeuverRaw(0, false, 0);                                  /* FctID 18 */
 
 
@@ -1280,12 +1299,18 @@ public class BAPBridge {
      */
     private static String directionArrow(RouteGuidance.State s, int idx) {
         if (idx < 0 || s.mType == null || idx >= s.mType.length) {
-            return "\u2191"; /* up arrow fallback */
+            return "";
         }
+        int type = s.mType[idx];
         int[] mapped = ManeuverMapper.map(
-            s.mType[idx], s.mTurnAngle[idx],
+            type, s.mTurnAngle[idx],
             s.mJunctionType[idx], s.mDrivingSide[idx]);
+        int main = mapped[0];
         int dir = mapped[1];
+
+        if (main == ManeuverMapper.NO_SYMBOL || main == ManeuverMapper.NO_INFO) {
+            return "";
+        }
         if (dir == ManeuverMapper.DIR_LEFT)         return "\u2190"; /* left */
         if (dir == ManeuverMapper.DIR_SLIGHT_LEFT)  return "\u2196"; /* upper-left */
         if (dir == ManeuverMapper.DIR_SHARP_LEFT)   return "\u2199"; /* lower-left */
@@ -1293,7 +1318,17 @@ public class BAPBridge {
         if (dir == ManeuverMapper.DIR_SLIGHT_RIGHT) return "\u2197"; /* upper-right */
         if (dir == ManeuverMapper.DIR_SHARP_RIGHT)  return "\u2198"; /* lower-right */
         if (dir == ManeuverMapper.DIR_UTURN)        return "\u21B6"; /* uturn */
-        return "\u2191"; /* straight / up */
+
+        /* Only explicit no-turn/follow-road/straight-ahead source types may
+         * produce a straight arrow. Other straight direction codes belong to
+         * non-straight main elements (arrival/roundabout/etc.) and must not
+         * fabricate an up-arrow text prefix. */
+        if (type == ManeuverMapper.MT_NO_TURN
+                || type == ManeuverMapper.MT_FOLLOW_ROAD
+                || type == ManeuverMapper.MT_STRAIGHT_AHEAD) {
+            return "\u2191";
+        }
+        return "";
     }
 
     private static String keepLastColonPart(String v) {

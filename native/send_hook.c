@@ -324,7 +324,14 @@ static unsigned int retry_reset(const char *reason)
 static void reset_rgi_for_identification(void *ctx)
 {
     unsigned int i;
-    unsigned int generation = retry_reset("start_identification");
+    unsigned int generation;
+
+    /* Match the proven v9 session-boundary behavior: serialize the full
+     * Identification reset against 0x5200 sends, while retaining the v1.1
+     * diagnostics and inactive-slot rcvid=-1 cleanup. */
+    pthread_mutex_lock(&send_lock);
+
+    generation = retry_reset("start_identification");
     pthread_mutex_lock(&pending_lock);
     for (i = 0; i < 8; ++i) {
         pending_replies[i].active = 0;
@@ -333,8 +340,12 @@ static void reset_rgi_for_identification(void *ctx)
         pending_replies[i].generation = 0;
     }
     pthread_mutex_unlock(&pending_lock);
+    k2161_rgi_start_sent = 0;
     k2161_status_reset(ctx);
     (void)rgi_diag_session_bump("start_identification");
+
+    pthread_mutex_unlock(&send_lock);
+
     rgi_diag_log("5200", "session_boundary msg=1d00 ctx=%p generation=%u action=rearm",
                  ctx, generation);
 }
