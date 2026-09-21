@@ -23,6 +23,31 @@ dynamic distance updates
 natural route-end deactivation
 ```
 
+## v1.2.0-dev.3 vehicle test
+
+The development checkpoint was tested on the Audi Q7 4M / `MHI2_ER_AUG22_K2161`, MU 1421 platform.
+
+### Passed
+
+- factory HUD RGI remains operational
+- initial/far first-maneuver distance presentation is treated as PASS for this checkpoint; reopen only if later vehicle evidence reproduces the old `START_ROUTE`/wrong-far-distance behavior
+- the existing CarPlay route-guidance transport, Java bridge and HUD BAP path continue to operate with the dev.3 presentation changes
+
+### Virtual Cockpit result
+
+`VC_RGI_ENABLED=true` does not by itself activate the K2161 Virtual Cockpit/FPK navigation presentation.
+
+Observed vehicle state while CarPlay route guidance was active:
+
+```text
+HUD RGI: active
+VC route-guidance layout: not active
+VC state: normal no-navigation layout
+transient RGI flicker: not observed
+```
+
+The dev.3 switch therefore leaves the shared VC/FPK presentation available but does not actively force the cluster into its route-guidance layout. Explicit VC/FPK presentation activation remains unresolved.
+
 ## v1.1 vehicle test
 
 The current release was tested on the same Audi Q7 4M / K2161 platform.
@@ -62,6 +87,8 @@ live visual rendering: not yet validated
 ## Virtual Cockpit
 
 CarPlay graphical route guidance is not an output target of v1.1. The validated display target is the factory HUD.
+
+For v1.2.0-dev.3, the shared/simple VC presentation was left available, but vehicle testing showed that this alone does not activate the Virtual Cockpit route-guidance layout.
 
 ## Application observations
 
