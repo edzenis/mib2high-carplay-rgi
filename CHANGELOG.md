@@ -10,10 +10,17 @@
 - adds `VC_RGI_ENABLED` as a compile-time switch; enabled leaves the shared K2161 maneuver presentation available to the VC/FPK, while disabled applies the existing best-effort map visibility/presentation suppression
 - keeps the shared maneuver descriptor/distance BAP transaction active in both modes because the HUD requires the same route-guidance writes
 
-### Validation status
+### Vehicle validation
 
-- source-reviewed development checkpoint; Java/QNX build and vehicle validation pending
-- VC enable/disable behavior still requires vehicle validation because K2161 shares route-guidance BAP state between HUD and the simple VC presentation
+- vehicle-tested on Audi Q7 4M / `MHI2_ER_AUG22_K2161`, MU 1421
+- factory HUD RGI remains operational with dev.3
+- initial/far first-maneuver distance presentation: PASS for the current checkpoint; treat this item as closed unless later vehicle evidence shows the old `START_ROUTE`/wrong-far-distance behavior again
+- `VC_RGI_ENABLED=true` does not activate the Virtual Cockpit/FPK route-guidance layout on this vehicle
+- with CarPlay route guidance active, the VC remains in its normal no-navigation layout; no transient RGI flicker was observed in this dev.3 test
+
+### Known limitation
+
+- dev.3 leaves the shared VC/FPK maneuver presentation available, but it does not actively switch the Virtual Cockpit into its navigation/route-guidance presentation; explicit K2161 VC/FPK activation is still unresolved
 
 ## v1.1 — vehicle-tested K2161 release
 
