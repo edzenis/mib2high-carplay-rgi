@@ -9,9 +9,22 @@ CarPlay turn-by-turn route guidance for Audi **MIB2 High / MHI2**, using Apple i
 - Firmware: `MHI2_ER_AUG22_K2161`
 - MU software: `1421`
 
+## v1.2.0-dev.3 development checkpoint
+
+v1.2.0-dev.3 has now been vehicle-tested on the K2161 target.
+
+Confirmed on the vehicle:
+
+- factory HUD RGI remains operational
+- the initial/far first-maneuver distance presentation change is treated as PASS for this checkpoint; it will be reopened only if later vehicle evidence reproduces the old `START_ROUTE`/wrong-far-distance behavior
+- `VC_RGI_ENABLED=true` does not activate the Virtual Cockpit/FPK route-guidance layout on this vehicle
+- while CarPlay route guidance is active, the VC remains in its normal no-navigation layout; no transient RGI flicker was observed in the dev.3 test
+
+The remaining dev.3 display issue is therefore explicit K2161 VC/FPK presentation activation, not the already-working HUD RGI path.
+
 ## v1.1 status
 
-v1.1 is the current vehicle-tested release for K2161.
+v1.1 is the current vehicle-tested stable release for K2161.
 
 Validated on the vehicle:
 
