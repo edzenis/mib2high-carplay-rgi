@@ -16,11 +16,12 @@ v1.2.0-dev.3 has now been vehicle-tested on the K2161 target.
 Confirmed on the vehicle:
 
 - factory HUD RGI remains operational
-- the initial/far first-maneuver distance presentation change is treated as PASS for this checkpoint; it will be reopened only if later vehicle evidence reproduces the old `START_ROUTE`/wrong-far-distance behavior
-- `VC_RGI_ENABLED=true` does not activate the Virtual Cockpit/FPK route-guidance layout on this vehicle
-- while CarPlay route guidance is active, the VC remains in its normal no-navigation layout; no transient RGI flicker was observed in the dev.3 test
+- the dev.3 initial/far first-maneuver distance correction is live-confirmed; the HUD showed the correct next-maneuver distance during the tested route
+- with `VC_RGI_ENABLED=true`, the Virtual Cockpit does enter a navigation/map presentation while CarPlay route guidance is active
+- the same maneuver distance was visible in both HUD and VC during the test (`1.0 km`)
+- the VC presentation is incomplete: a map fragment is shown, but the expected maneuver graphic is not presented
 
-The remaining dev.3 display issue is therefore explicit K2161 VC/FPK presentation activation, not the already-working HUD RGI path.
+The remaining dev.3 display issue is therefore the exact K2161 VC/FPK presentation state needed to produce the intended maneuver-oriented route-guidance view rather than the current partial map presentation. The already-working HUD RGI path does not need to be redesigned for this.
 
 ## v1.1 status
 
