@@ -30,23 +30,28 @@ The development checkpoint was tested on the Audi Q7 4M / `MHI2_ER_AUG22_K2161`,
 ### Passed
 
 - factory HUD RGI remains operational
-- initial/far first-maneuver distance presentation is treated as PASS for this checkpoint; reopen only if later vehicle evidence reproduces the old `START_ROUTE`/wrong-far-distance behavior
+- initial/far first-maneuver distance correction is live-confirmed on the tested route
 - the existing CarPlay route-guidance transport, Java bridge and HUD BAP path continue to operate with the dev.3 presentation changes
+- the same next-maneuver distance was visible simultaneously in HUD and VC during the test (`1.0 km`)
 
 ### Virtual Cockpit result
 
-`VC_RGI_ENABLED=true` does not by itself activate the K2161 Virtual Cockpit/FPK navigation presentation.
+`VC_RGI_ENABLED=true` does activate a K2161 Virtual Cockpit navigation/map presentation while CarPlay route guidance is active.
 
-Observed vehicle state while CarPlay route guidance was active:
+Observed vehicle state:
 
 ```text
-HUD RGI: active
-VC route-guidance layout: not active
-VC state: normal no-navigation layout
-transient RGI flicker: not observed
+HUD maneuver graphic: active
+HUD maneuver distance: 1.0 km
+VC navigation/map presentation: active
+VC maneuver distance: 1.0 km
+VC map area: visible
+VC maneuver graphic: not present
 ```
 
-The dev.3 switch therefore leaves the shared VC/FPK presentation available but does not actively force the cluster into its route-guidance layout. Explicit VC/FPK presentation activation remains unresolved.
+The VC therefore receives enough shared route-guidance state to enter a navigation presentation and show the correct maneuver distance, but the resulting presentation is incomplete: only a map fragment is shown instead of the intended maneuver-oriented route-guidance graphic.
+
+The remaining VC work is to identify the exact K2161 map/presentation state needed for the desired FPK maneuver view. This is no longer classified as a failure to activate VC navigation mode.
 
 ## v1.1 vehicle test
 
@@ -88,7 +93,7 @@ live visual rendering: not yet validated
 
 CarPlay graphical route guidance is not an output target of v1.1. The validated display target is the factory HUD.
 
-For v1.2.0-dev.3, the shared/simple VC presentation was left available, but vehicle testing showed that this alone does not activate the Virtual Cockpit route-guidance layout.
+For v1.2.0-dev.3, vehicle testing confirmed that the shared route-guidance state can activate a VC navigation/map presentation and carry the correct maneuver distance into the VC. The remaining issue is presentation selection: the VC currently shows only a map fragment and does not display the intended maneuver graphic.
 
 ## Application observations
 
