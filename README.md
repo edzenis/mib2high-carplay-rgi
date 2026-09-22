@@ -9,6 +9,33 @@ CarPlay turn-by-turn route guidance for Audi **MIB2 High / MHI2**, using Apple i
 - Firmware: `MHI2_ER_AUG22_K2161`
 - MU software: `1421`
 
+## v1.2.0-dev.4 development branch
+
+The dev.4 branch targets the remaining Virtual Cockpit presentation problem identified by the dev.3 car test.
+
+Design target:
+
+- `VC_RGI_ENABLED=true` by default
+- factory HUD maneuver graphic and distance remain active
+- factory Audi RGI presentation is selected in the Virtual Cockpit
+- maneuver graphic and maneuver distance are rendered by the OEM cluster presentation, not by a custom renderer
+- direct CarPlay BAP route-guidance type remains `ActiveRGType=0`
+- the source keeps a disabled/HUD-only branch as well; that path must leave the VC in its normal non-navigation/full-circle presentation instead of treating COMPASS as equivalent to "off"
+
+Current dev.4 candidate behavior:
+
+- enabled path makes the local factory RGI state valid, propagates RG-active state and directly selects `ClusterViewMode` favored RGI mode `1`
+- disabled path does not force COMPASS/MAP/RGI/KDK; it keeps cluster RG status inactive and experimentally requests HUD content through the separate DDP2 `updateHUDDisplayContent(true)` API
+- both branches remain compiled into one JAR because `VC_RGI_ENABLED` is a runtime static boolean rather than a compile-time `final` constant
+- no custom VC graphics renderer is used
+
+Build status:
+
+- current Java candidate builds successfully against the K2161 LSD compile dependency
+- local candidate JAR SHA256: `542cb3ec7f7cb2edfaebb1e89b53a46c131ce9f4163d4d78de838e489df1569d`
+- native `.so` is unchanged from dev.3
+- vehicle validation of dev.4 is still pending
+
 ## v1.2.0-dev.3 development checkpoint
 
 v1.2.0-dev.3 has been vehicle-tested on the K2161 target.

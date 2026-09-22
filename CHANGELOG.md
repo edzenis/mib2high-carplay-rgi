@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.2.0-dev.4 — factory VC RGI presentation candidate
+
+### Changed
+
+- keeps one runtime `VC_RGI_ENABLED` switch in the source, defaulted to `true`; both enabled and disabled paths remain compiled into the same JAR
+- enabled path keeps the proven CarPlay HUD transaction (`RGStatus=1`, `ActiveRGType=0`) and explicitly selects the factory K2161 `ClusterViewMode` RGI favored view (`1`)
+- enabled path propagates the factory RG-active state before selecting RGI so the OEM state machine sees valid route-guidance data
+- does not use a custom VC renderer, EGL graphics path, LVDS maneuver renderer or synthetic maneuver artwork
+- preserves and restores the user's pre-CarPlay favored VC state around the CarPlay ownership window
+- development disabled path no longer treats COMPASS as equivalent to the desired normal/full-circle VC state
+- disabled path leaves favored VC navigation mode untouched, keeps VC route-guidance status inactive, and uses the separate DDP2 `updateHUDDisplayContent(true)` request as the HUD-only experiment
+- route-guidance ownership/gating remains in place so stock native guidance writes cannot overwrite the CarPlay transaction while CarPlay owns route guidance
+
+### Build status
+
+- Java source builds successfully against the K2161 LSD compile dependency
+- candidate JAR bytecode contains both `FACTORY_RGI` and `HUD_ONLY_DDP2` branches with `VC_RGI_ENABLED=true` set by the static initializer
+- current development JAR SHA256 from the local validated build: `542cb3ec7f7cb2edfaebb1e89b53a46c131ce9f4163d4d78de838e489df1569d`
+- native `.so` is unchanged from dev.3
+
+### Vehicle validation
+
+- not yet vehicle-tested
+- primary dev.4 test target: factory Audi maneuver-oriented RGI in the Virtual Cockpit while retaining the already-working HUD maneuver graphic and distance
+- disabled/HUD-only DDP2 behavior remains experimental until separately tested on the vehicle
+
 ## v1.2.0-dev.3 — presentation alignment + VC switch
 
 ### Changed
