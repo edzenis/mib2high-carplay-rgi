@@ -11,17 +11,33 @@ CarPlay turn-by-turn route guidance for Audi **MIB2 High / MHI2**, using Apple i
 
 ## v1.2.0-dev.3 development checkpoint
 
-v1.2.0-dev.3 has now been vehicle-tested on the K2161 target.
+v1.2.0-dev.3 has been vehicle-tested on the K2161 target.
 
 Confirmed on the vehicle:
 
 - factory HUD RGI remains operational
 - the dev.3 initial/far first-maneuver distance correction is live-confirmed; the HUD showed the correct next-maneuver distance during the tested route
-- with `VC_RGI_ENABLED=true`, the Virtual Cockpit does enter a navigation/map presentation while CarPlay route guidance is active
+- with `VC_RGI_ENABLED=true`, the Virtual Cockpit enters a navigation presentation while CarPlay route guidance is active
 - the same maneuver distance was visible in both HUD and VC during the test (`1.0 km`)
-- the VC presentation is incomplete: a map fragment is shown, but the expected maneuver graphic is not presented
+- HUD maneuver graphic: PASS
+- HUD maneuver distance: PASS
+- VC maneuver distance: PASS
+- VC maneuver graphic: not present
+- the VC showed a stock map fragment instead of the intended factory maneuver-oriented RGI presentation
 
-The remaining dev.3 display issue is therefore the exact K2161 VC/FPK presentation state needed to produce the intended maneuver-oriented route-guidance view rather than the current partial map presentation. The already-working HUD RGI path does not need to be redesigned for this.
+### What the dev.3 car test established
+
+The result is no longer treated as a failure to get CarPlay RGI into the cluster. The transport, parser, Java bridge, route-guidance ownership and maneuver-distance path are working far enough for the VC to enter navigation presentation and consume the same maneuver distance as the HUD.
+
+Post-test K2161 inspection showed that `ClusterViewMode` has distinct favored modes for RGI (`1`) and MAP (`3`). dev.3 makes RGI locally valid but does not explicitly select favored RGI mode `1`, which is consistent with the vehicle remaining in a MAP presentation and showing the observed map fragment.
+
+For the follow-up dev.4 work:
+
+- the direct CarPlay RGI BAP type remains `ActiveRGType=0`
+- factory RGI should be selected through `ClusterViewMode`, not by forcing the FPK input-listener path
+- Audi's stock outward type `4` is associated with the LVDS-map path, not the desired maneuver-oriented RGI mode
+- no custom VC renderer is used or planned
+- the `VC_RGI_ENABLED=false` behavior still needs to represent true HUD-only / normal full-circle VC operation; the dev.3 map-suppression branch is not considered proven for that requirement
 
 ## v1.1 status
 

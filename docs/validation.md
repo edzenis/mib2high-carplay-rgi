@@ -36,26 +36,53 @@ The development checkpoint was tested on the Audi Q7 4M / `MHI2_ER_AUG22_K2161`,
 
 ### Virtual Cockpit result
 
-`VC_RGI_ENABLED=true` does activate a K2161 Virtual Cockpit navigation/map presentation while CarPlay route guidance is active.
+`VC_RGI_ENABLED=true` activates a K2161 Virtual Cockpit navigation presentation while CarPlay route guidance is active.
 
 Observed vehicle state:
 
 ```text
-HUD maneuver graphic: active
-HUD maneuver distance: 1.0 km
-VC navigation/map presentation: active
-VC maneuver distance: 1.0 km
-VC map area: visible
-VC maneuver graphic: not present
+HUD maneuver graphic:        PASS
+HUD maneuver distance:       PASS (1.0 km in the photographed test)
+VC navigation presentation:  ACTIVE
+VC maneuver distance:        PASS (same 1.0 km)
+VC map area:                 ACTIVE / partial stock map fragment
+VC maneuver graphic:         NOT PRESENT
 ```
 
-The VC therefore receives enough shared route-guidance state to enter a navigation presentation and show the correct maneuver distance, but the resulting presentation is incomplete: only a map fragment is shown instead of the intended maneuver-oriented route-guidance graphic.
+This is an important narrowing of the problem. The VC receives enough shared route-guidance state to enter navigation presentation and show the correct maneuver distance. The failure is therefore not classified as missing CarPlay RGI transport, parser output, Java bridge output, BAP ownership, or cluster activation.
 
-The remaining VC work is to identify the exact K2161 map/presentation state needed for the desired FPK maneuver view. This is no longer classified as a failure to activate VC navigation mode.
+### Post-test K2161 state-machine analysis
+
+Offline K2161 inspection after the road test showed:
+
+```text
+ClusterViewMode favored 0 = COMPASS
+ClusterViewMode favored 1 = RGI
+ClusterViewMode favored 2 = KDK
+ClusterViewMode favored 3 = MAP
+```
+
+`ClusterService.updateRGIString(non-empty)` contributes to `rgiValid`; dev.3 also overlays `DSIResponseContainer.rgActive=true`. That makes the factory RGI path eligible, but dev.3 never explicitly selects favored view mode `1`.
+
+The photographed map-fragment result is therefore consistent with the FPK retaining its MAP favored state while dev.3 simultaneously supplies valid maneuver/distance data. The next development step is to select the factory RGI presentation directly through `ClusterViewMode` while preserving the already-working HUD transaction.
+
+The corresponding BAP conclusion is:
+
+- direct CarPlay maneuver RGI remains `ActiveRGType=0`
+- stock FPK code that emits outward type `4` belongs to the Audi LVDS-map pathway; it is not evidence that the direct maneuver-RGI bridge should send type `4`
+- the FPK `ClusterInputListener` should not be used to request RGI mode because its validation/fallback path can return to MAP; the direct `ClusterViewMode` state machine is the relevant local presentation selector
+
+No custom maneuver renderer is part of this plan.
+
+### Disabled-switch semantics
+
+The dev.3 `VC_RGI_ENABLED=false` branch was not vehicle-validated as the desired HUD-only / normal full-circle state.
+
+Post-test analysis also showed why this distinction matters: COMPASS and MAP are navigation-content modes inside the VC navigation presentation. They are not equivalent to the user's normal non-navigation/full-circle speedometer presentation. Therefore map suppression or forcing COMPASS is not considered a completed disabled-mode implementation.
 
 ## v1.1 vehicle test
 
-The current release was tested on the same Audi Q7 4M / K2161 platform.
+The current stable release was tested on the same Audi Q7 4M / K2161 platform.
 
 ### Passed
 
@@ -93,7 +120,9 @@ live visual rendering: not yet validated
 
 CarPlay graphical route guidance is not an output target of v1.1. The validated display target is the factory HUD.
 
-For v1.2.0-dev.3, vehicle testing confirmed that the shared route-guidance state can activate a VC navigation/map presentation and carry the correct maneuver distance into the VC. The remaining issue is presentation selection: the VC currently shows only a map fragment and does not display the intended maneuver graphic.
+For v1.2.0-dev.3, vehicle testing confirmed that shared CarPlay route-guidance state can activate a VC navigation presentation and carry the correct maneuver distance into the VC. The remaining dev.3 issue is presentation selection: the FPK stayed in a MAP presentation, showing a partial map fragment and no maneuver graphic.
+
+The dev.4 direction is therefore factory RGI presentation selection, not a custom graphics renderer and not a redesign of the working HUD path.
 
 ## Application observations
 

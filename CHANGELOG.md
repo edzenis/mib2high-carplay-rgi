@@ -7,7 +7,7 @@
 - resolves one authoritative presentation maneuver for descriptor, distance and turn-to text
 - when iOS keeps `START_ROUTE` at the head while a later real maneuver is presented, rejects an absent or implausibly larger top-level maneuver distance when the selected 0x5202 slot has a usable distance
 - adds presentation-distance diagnostics showing live versus selected-slot distance and which source was sent
-- adds `VC_RGI_ENABLED` as a compile-time switch; enabled leaves the shared K2161 maneuver presentation available to the VC/FPK, while disabled applies the existing best-effort map visibility/presentation suppression
+- adds `VC_RGI_ENABLED` as a development switch; enabled leaves the shared K2161 maneuver presentation available to the VC/FPK, while disabled applies the then-current best-effort map visibility/presentation suppression
 - keeps the shared maneuver descriptor/distance BAP transaction active in both modes because the HUD requires the same route-guidance writes
 
 ### Vehicle validation
@@ -15,13 +15,33 @@
 - vehicle-tested on Audi Q7 4M / `MHI2_ER_AUG22_K2161`, MU 1421
 - factory HUD RGI remains operational with dev.3
 - initial/far first-maneuver distance presentation: live-confirmed; the tested route showed the correct next-maneuver distance on the HUD
-- `VC_RGI_ENABLED=true` does activate a Virtual Cockpit navigation/map presentation on this vehicle
+- `VC_RGI_ENABLED=true` activates a Virtual Cockpit navigation presentation on this vehicle
 - the same maneuver distance was visible in both HUD and VC during the test (`1.0 km`)
-- the VC presentation is incomplete: a map fragment is shown, but the expected maneuver graphic is not presented
+- HUD maneuver graphic: PASS
+- HUD maneuver distance: PASS
+- VC maneuver distance: PASS
+- VC maneuver graphic: NOT PRESENT
+- the VC showed a stock map fragment instead of the intended factory maneuver-oriented RGI view
+
+### Post-test K2161 analysis
+
+The dev.3 car test narrowed the remaining VC issue to presentation selection rather than transport or maneuver-data generation.
+
+Offline K2161 inspection after the test showed:
+
+- `ClusterViewMode` uses favored view mode `1` for factory RGI and `3` for MAP
+- dev.3 makes local RGI state valid (`rgActive` + non-empty RGI string) but does not select favored view mode `1`
+- the observed map-fragment result is therefore consistent with the FPK remaining in its MAP favored state while the same BAP maneuver distance is also available to the cluster
+- direct CarPlay maneuver RGI remains `ActiveRGType=0`; Audi stock FPK code emitting outward type `4` belongs to the LVDS-map path and is not a reason to change the direct RGI type to `4`
+- the desired VC-enabled follow-up should select the factory RGI view through `ClusterViewMode`, not through `ClusterInputListener`, which validates FPK requests and can fall back to MAP
+- no custom VC renderer is required or desired for this path
+
+The dev.3 disabled branch is also not considered a proven implementation of the desired normal/full-circle VC state. Map suppression or COMPASS selection controls navigation content, not necessarily the global non-navigation/full-circle presentation. That behavior remains a dev.4 concern.
 
 ### Known limitation
 
-- dev.3 reaches and activates a VC/FPK navigation presentation, but the resulting state is not yet the intended maneuver-oriented route-guidance view; exact K2161 map/presentation state control remains unresolved
+- dev.3 reaches and activates a VC/FPK navigation presentation, but it does not explicitly select the factory RGI favored view; the resulting state is a partial MAP presentation without the maneuver graphic
+- `VC_RGI_ENABLED=false` in dev.3 is not vehicle-validated as a true HUD-only/full-circle mode
 
 ## v1.1 — vehicle-tested K2161 release
 
