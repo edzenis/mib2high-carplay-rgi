@@ -30,6 +30,26 @@ static const uint8_t rgi_component_payload[82] = {
     0x00,0x06,0x00,0x08,0x00,0x06
 };
 
+/*
+ * WirelessCarPlayTransportComponent (IdentificationInformation param 24).
+ *
+ * Baseline component only: do not advertise theme-assets/AltScreen-specific
+ * extensions until their K2161/iOS wire mapping has been independently
+ * verified.
+ *
+ * sub 0: TransportComponentIdentifier = 0
+ * sub 1: TransportComponentName = "CarPlay"
+ * sub 2: TransportSupportsIAP2Connection (void flag)
+ * sub 4: TransportSupportsCarPlay (void flag)
+ */
+static const uint8_t wireless_carplay_component_payload[26] = {
+    0x00,0x06,0x00,0x00,0x00,0x00,
+    0x00,0x0c,0x00,0x01,
+    0x43,0x61,0x72,0x50,0x6c,0x61,0x79,0x00,
+    0x00,0x04,0x00,0x02,
+    0x00,0x04,0x00,0x04
+};
+
 static int append_rgi_component(void *ctx, void *pkt) {
     int rc;
     k2161_status_ident_attempt(ctx);
@@ -40,12 +60,20 @@ static int append_rgi_component(void *ctx, void *pkt) {
     return rc;
 }
 
+static int append_wireless_carplay_component(void *ctx, void *pkt) {
+    if (!packet_addparam_blob) return -1;
+    return packet_addparam_blob(ctx, pkt, 0x0018,
+                                wireless_carplay_component_payload,
+                                sizeof(wireless_carplay_component_payload));
+}
+
 int k2161_wrapped_gps_builder(void *ctx, void *pkt) {
     int rc;
     if (!original_gps_builder) return -1;
     rc = original_gps_builder(ctx, pkt);
     if (rc == -1) return -1;
     if (append_rgi_component(ctx, pkt) != 0) return -1;
+    if (append_wireless_carplay_component(ctx, pkt) != 0) return -1;
     return 1;
 }
 
