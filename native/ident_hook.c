@@ -33,21 +33,22 @@ static const uint8_t rgi_component_payload[82] = {
 /*
  * WirelessCarPlayTransportComponent (IdentificationInformation param 24).
  *
- * Baseline component only: do not advertise theme-assets/AltScreen-specific
- * extensions until their K2161/iOS wire mapping has been independently
- * verified.
+ * K2161's stock Identification table has no param 24 builder.  The nested
+ * ids below follow the current Apple iAP2 schema:
  *
  * sub 0: TransportComponentIdentifier = 0
  * sub 1: TransportComponentName = "CarPlay"
  * sub 2: TransportSupportsIAP2Connection (void flag)
  * sub 4: TransportSupportsCarPlay (void flag)
+ * sub 5: TransportSupportsThemeAssets (void flag)
  */
-static const uint8_t wireless_carplay_component_payload[26] = {
+static const uint8_t wireless_carplay_component_payload[30] = {
     0x00,0x06,0x00,0x00,0x00,0x00,
     0x00,0x0c,0x00,0x01,
     0x43,0x61,0x72,0x50,0x6c,0x61,0x79,0x00,
     0x00,0x04,0x00,0x02,
-    0x00,0x04,0x00,0x04
+    0x00,0x04,0x00,0x04,
+    0x00,0x04,0x00,0x05
 };
 
 static int append_rgi_component(void *ctx, void *pkt) {
