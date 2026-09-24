@@ -49,21 +49,29 @@ M.I.B. itself uses `/mod/custom.sh` for its custom-script launcher.
 ## Running the collector
 
 1. Insert the M.I.B. SD card into **SD1**.
-2. Open the Green Engineering Menu / M.I.B. menu as you normally would.
-3. Select the M.I.B. item labelled:
+2. Open the **Green Engineering Menu (GEM)**.
+3. Open **M.I.B.**.
+4. Open **Advanced Settings**.
+5. Select:
 
    ```text
    Run /mod/custom.sh from m.i.b. SD
    ```
 
-4. M.I.B. may show its normal generic warning about programming/flashing. The collector itself does not flash or patch the unit.
-5. Leave the SD card inserted and let the collector finish. Do not press Back or remove the card while it is working.
-6. The collector shows simple numbered progress steps. Searching can take a few minutes depending on the unit and firmware.
-7. Remove the SD card **only after** the collector displays:
+6. M.I.B. may show its normal generic warning about programming/flashing. The collector itself does not flash or patch the unit.
+7. Leave the SD card inserted and let the collector finish. **Do not press Back and do not remove the SD card while it is working.**
+8. The collector shows simple numbered progress steps. Searching can take a few minutes depending on the unit and firmware.
+9. Remove the SD card **only after** the collector displays:
 
    ```text
    It is now SAFE TO REMOVE THE SD CARD.
    ```
+
+In short, the menu path is:
+
+```text
+GEM → M.I.B. → Advanced Settings → Run /mod/custom.sh from m.i.b. SD
+```
 
 ## After collection
 
