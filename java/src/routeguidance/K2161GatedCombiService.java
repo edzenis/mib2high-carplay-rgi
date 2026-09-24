@@ -15,6 +15,7 @@ public final class K2161GatedCombiService
 
     private final CombiBAPServiceNavi real;
     private volatile boolean blockRouteGuidance;
+    private volatile boolean blockMapPresentation;
 
     public K2161GatedCombiService(CombiBAPServiceNavi real) {
         if (real == null) {
@@ -47,6 +48,19 @@ public final class K2161GatedCombiService
 
     public boolean isRouteGuidanceBlocked() {
         return blockRouteGuidance;
+    }
+
+    public void setMapPresentationBlocked(boolean blocked) {
+        blockMapPresentation = blocked;
+
+        note(
+            "MAP_BLOCK=" +
+            (blocked ? "1" : "0")
+        );
+    }
+
+    public boolean isMapPresentationBlocked() {
+        return blockMapPresentation;
     }
 
     /*
@@ -240,10 +254,18 @@ public final class K2161GatedCombiService
     }
 
     public void updateMapColor(int a) {
+        if (blockMapPresentation) {
+            blocked("updateMapColor");
+            return;
+        }
         real.updateMapColor(a);
     }
 
     public void updateMapType(int a, int b) {
+        if (blockMapPresentation) {
+            blocked("updateMapType");
+            return;
+        }
         real.updateMapType(a, b);
     }
 
@@ -251,10 +273,18 @@ public final class K2161GatedCombiService
         boolean a,
         int b
     ) {
+        if (blockMapPresentation) {
+            blocked("updateSupportedMapTypes");
+            return;
+        }
         real.updateSupportedMapTypes(a, b);
     }
 
     public void updateMapView(int a, int b) {
+        if (blockMapPresentation) {
+            blocked("updateMapView");
+            return;
+        }
         real.updateMapView(a, b);
     }
 
@@ -262,6 +292,10 @@ public final class K2161GatedCombiService
         int a,
         int b
     ) {
+        if (blockMapPresentation) {
+            blocked("updateSupportedMapViews");
+            return;
+        }
         real.updateSupportedMapViews(a, b);
     }
 
@@ -269,10 +303,18 @@ public final class K2161GatedCombiService
         boolean a,
         boolean b
     ) {
+        if (blockMapPresentation) {
+            blocked("updateMapVisibility");
+            return;
+        }
         real.updateMapVisibility(a, b);
     }
 
     public void updateMapOrientation(int a) {
+        if (blockMapPresentation) {
+            blocked("updateMapOrientation");
+            return;
+        }
         real.updateMapOrientation(a);
     }
 
@@ -283,6 +325,10 @@ public final class K2161GatedCombiService
         int d,
         boolean e
     ) {
+        if (blockMapPresentation) {
+            blocked("updateMapScale");
+            return;
+        }
         real.updateMapScale(a, b, c, d, e);
     }
 
@@ -322,6 +368,10 @@ public final class K2161GatedCombiService
         int a,
         boolean b
     ) {
+        if (blockMapPresentation) {
+            blocked("updateFSGSetup");
+            return;
+        }
         real.updateFSGSetup(a, b);
     }
 
@@ -330,6 +380,10 @@ public final class K2161GatedCombiService
         boolean b,
         boolean c
     ) {
+        if (blockMapPresentation) {
+            blocked("updateMapPresentation");
+            return;
+        }
         real.updateMapPresentation(a, b, c);
     }
 }

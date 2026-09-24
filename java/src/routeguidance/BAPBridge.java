@@ -21,6 +21,8 @@ import de.audi.tghu.navi.app.Navigation;
 import de.audi.tghu.navi.app.cluster.BAPDistanceFormatter;
 import de.audi.tghu.navi.app.cluster.ClusterService;
 import de.audi.tghu.navi.app.command.DSIResponseContainer;
+import java.lang.reflect.Field;
+import de.audi.atip.interapp.combi.ddp2.CombiService;
 import java.lang.reflect.Method;
 
 public class BAPBridge {
@@ -39,7 +41,16 @@ public class BAPBridge {
      * map-presentation suppression.  It intentionally does not gate the shared maneuver
      * descriptor/distance writes because the HUD requires those same writes.
      */
-    private static final boolean VC_RGI_ENABLED = true;
+    /*
+     * Virtual Cockpit policy:
+     *
+     * true  = factory Audi RGI presentation in the VC.
+     * false = HUD-only CarPlay guidance; VC is held in the factory
+     *         non-navigation/COMPASS presentation.
+     */
+    private static boolean VC_RGI_ENABLED = true;
+
+    private static final int VC_VIEW_RGI = 1;
 
     /* Allow small rounding differences before treating the top-level distance as belonging
      * to a different (typically START_ROUTE) presentation state. */
@@ -72,6 +83,28 @@ public class BAPBridge {
     private K2161RouteGuidanceOwnership ownership;
 
     private ClusterService csRef;
+
+    /*
+     * Temporary VC presentation ownership.
+     *
+     * K2161's ClusterInputListener rejects RGI as a directly user-selectable
+     * FPK mode, while ClusterViewMode itself supports the automatic RGI mode.
+     * Save the existing favored state so CarPlay can temporarily override it
+     * and restore it exactly when guidance is released.
+     */
+    private boolean vcPresentationOverrideActive = false;
+    private int vcSavedFavoredViewMode = 0;
+    private boolean vcSavedFavoredViewModeReceived = false;
+    private boolean vcFactoryRgStatePropagated = false;
+
+    /*
+     * Used only by VC_RGI_ENABLED=false.
+     * DDP2 exposes HUD content separately from RG state.
+     */
+    private boolean hudDisplayContentForced = false;
+
+    private Field vcFavoredViewModeField;
+    private Field vcFavoredViewModeReceivedField;
 
     private static final class SilentLogChannel extends LogChannel {
         public void log(int level, String pattern,
@@ -196,15 +229,255 @@ public class BAPBridge {
         Log.d(TAG, "[BAP] " + call + "(" + args + ")");
     }
 
-    /** Configure the optional VC presentation without touching the shared HUD transaction. */
-    private void configureVcPresentation() {
+    /** Capture the factory VC preference before CarPlay changes it. */
+    private void captureVcPresentationState() throws Exception {
+        if (vcPresentationOverrideActive) return;
+
+        if (csRef == null || csRef.getClusterViewMode() == null) {
+            throw new Exception("ClusterViewMode unavailable");
+        }
+
+        Object cvm = csRef.getClusterViewMode();
+        Class cls = cvm.getClass();
+
+        vcFavoredViewModeField =
+            cls.getDeclaredField("favoredViewMode");
+        vcFavoredViewModeReceivedField =
+            cls.getDeclaredField("favoredViewModeReceived");
+
+        vcFavoredViewModeField.setAccessible(true);
+        vcFavoredViewModeReceivedField.setAccessible(true);
+
+        vcSavedFavoredViewMode =
+            vcFavoredViewModeField.getInt(cvm);
+        vcSavedFavoredViewModeReceived =
+            vcFavoredViewModeReceivedField.getBoolean(cvm);
+
+        vcPresentationOverrideActive = true;
+
+        Log.i(TAG,
+            "VC state captured: favored=" + vcSavedFavoredViewMode
+            + " received=" + vcSavedFavoredViewModeReceived);
+    }
+
+    /**
+     * Select a factory K2161 ClusterViewMode directly.
+     *
+     * Do not route this through ClusterInputListener: on FPK that user-input
+     * path validates RGI away. ClusterViewMode.setFavoredViewMode() is the
+     * underlying OEM state-machine input and immediately refreshes the view.
+     */
+    private void setVcFavoredViewMode(int mode, String reason)
+        throws Exception {
+
+        if (csRef == null || csRef.getClusterViewMode() == null) {
+            throw new Exception("ClusterViewMode unavailable");
+        }
+
+        csRef.getClusterViewMode().setFavoredViewMode(mode);
+
+        Log.i(TAG,
+            "VC favored mode=" + mode + " reason=" + reason);
+    }
+
+    /**
+     * Prepare the VC before the forged HUD/RGI acceptance state is enabled.
+     *
+     * In HUD-only mode we move to COMPASS first so enabling the shared HUD
+     * precondition cannot momentarily select MAP/RGI.
+     */
+    /**
+     * Request HUD navigation content independently through the
+     * factory DDP2 CombiService.
+     *
+     * Used only when VC RGI is disabled.
+     */
+    private boolean setHudDisplayContent(boolean enabled) {
+        try {
+            if (csRef == null
+                    || csRef.getClusterViewMode() == null) {
+                return false;
+            }
+
+            Object cvm = csRef.getClusterViewMode();
+
+            Field f =
+                cvm.getClass().getDeclaredField("combiService");
+
+            f.setAccessible(true);
+
+            CombiService service =
+                (CombiService) f.get(cvm);
+
+            if (service == null) {
+                Log.w(TAG,
+                    "DDP2 CombiService unavailable");
+                return false;
+            }
+
+            service.updateHUDDisplayContent(enabled);
+            hudDisplayContentForced = enabled;
+
+            Log.i(TAG,
+                "DDP2 HUD display content=" + enabled);
+
+            return true;
+
+        } catch (Throwable t) {
+            Log.w(TAG,
+                "DDP2 HUD display request failed: "
+                + t.getClass().getName()
+                + ": "
+                + t.getMessage());
+
+            return false;
+        }
+    }
+
+
+    private void prepareVcPresentation() throws Exception {
         if (VC_RGI_ENABLED) {
-            Log.i(TAG, "VC RGI enabled: shared cluster maneuver presentation left available");
+            captureVcPresentationState();
             return;
         }
 
-        Log.i(TAG, "VC RGI disabled: applying best-effort map presentation suppression");
+        /*
+         * HUD-only mode:
+         *
+         * Leave the factory VC presentation untouched.
+         * In particular, do NOT force COMPASS.  COMPASS is itself
+         * a navigation presentation on this FPK.
+         */
         suppressVcMapPresentation();
+
+        Log.i(TAG,
+            "VC RGI disabled: favored view untouched");
+    }
+
+    /**
+     * Apply the requested dev.4 VC policy after K2161's shared RGI/HUD
+     * acceptance flags and BAP RG status are valid.
+     */
+    private void configureVcPresentation() throws Exception {
+        if (VC_RGI_ENABLED) {
+            /*
+             * Full dev4 factory-RGI path.
+             */
+            csRef.updateRgActive(true);
+            vcFactoryRgStatePropagated = true;
+
+            setVcFavoredViewMode(
+                VC_VIEW_RGI,
+                "CarPlay factory RGI"
+            );
+
+            Log.i(TAG,
+                "VC policy active: FACTORY_RGI");
+
+            return;
+        }
+
+        /*
+         * HUD-only path.
+         *
+         * No ClusterViewMode selection and no factory RG-active
+         * propagation into the VC state machine.
+         */
+        suppressVcMapPresentation();
+
+        if (setHudDisplayContent(true)) {
+            Log.i(TAG,
+                "VC policy active: HUD_ONLY_DDP2");
+        } else {
+            Log.w(TAG,
+                "HUD-only DDP2 request unavailable");
+        }
+    }
+
+    /**
+     * Reassert the selected presentation if another factory component changes
+     * favoredViewMode while CarPlay owns route guidance.
+     */
+    private void maintainVcPresentation() {
+        if (!VC_RGI_ENABLED) {
+            return;
+        }
+
+        if (!vcPresentationOverrideActive
+                || csRef == null
+                || vcFavoredViewModeField == null) {
+            return;
+        }
+
+        try {
+            Object cvm = csRef.getClusterViewMode();
+
+            if (cvm == null) {
+                return;
+            }
+
+            int current =
+                vcFavoredViewModeField.getInt(cvm);
+
+            if (current != VC_VIEW_RGI) {
+                setVcFavoredViewMode(
+                    VC_VIEW_RGI,
+                    "reassert after external VC mode change"
+                );
+            }
+
+        } catch (Throwable t) {
+            Log.w(TAG,
+                "VC presentation maintenance failed: "
+                + t.getClass().getName()
+                + ": "
+                + t.getMessage());
+        }
+    }
+
+    /** Restore the exact favored VC state captured before CarPlay takeover. */
+    private void restoreVcPresentation() {
+        if (!vcPresentationOverrideActive) return;
+
+        try {
+            if (csRef != null
+                    && csRef.getClusterViewMode() != null) {
+
+                Object cvm =
+                    csRef.getClusterViewMode();
+
+                csRef.getClusterViewMode().setFavoredViewMode(
+                    vcSavedFavoredViewMode
+                );
+
+                /*
+                 * setFavoredViewMode() marks the value as explicitly received.
+                 * Restore that bookkeeping flag as well so shutdown leaves the
+                 * stock state exactly as it was before CarPlay takeover.
+                 */
+                if (vcFavoredViewModeReceivedField != null) {
+                    vcFavoredViewModeReceivedField.setBoolean(
+                        cvm,
+                        vcSavedFavoredViewModeReceived
+                    );
+                }
+
+                Log.i(TAG,
+                    "VC state restored: favored="
+                    + vcSavedFavoredViewMode
+                    + " received="
+                    + vcSavedFavoredViewModeReceived);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG,
+                "VC state restore failed: "
+                + t.getClass().getName() + ": "
+                + t.getMessage());
+        } finally {
+            vcPresentationOverrideActive = false;
+            vcFavoredViewModeField = null;
+            vcFavoredViewModeReceivedField = null;
+        }
     }
 
     /**
@@ -322,6 +595,12 @@ public class BAPBridge {
     private void forceClusterRouteInfoState(boolean active) {
         if (csRef == null) return;
 
+        if (!active
+                && !rgActiveForced
+                && !vcFactoryRgStatePropagated) {
+            return;
+        }
+
         try {
             Navigation nav = Navigation.getInstance();
             DSIResponseContainer container = (nav != null) ? nav.getDsiResponseContainer() : null;
@@ -348,6 +627,25 @@ public class BAPBridge {
         } else {
             try { csRef.updateRGIString(null); }
             catch (Exception e) { Log.d(TAG, "force rgiValid=false failed: " + e.getMessage()); }
+
+            /*
+             * Only the VC-enabled path propagates ClusterService RG-active
+             * state. Restore that factory state symmetrically on release.
+             */
+            if (vcFactoryRgStatePropagated) {
+                try {
+                    csRef.updateRgActive(rgActiveSaved);
+                    Log.i(TAG,
+                        "Factory VC RG state restored to "
+                        + rgActiveSaved);
+                } catch (Exception e) {
+                    Log.w(TAG,
+                        "Factory VC RG-state restore failed: "
+                        + e.getMessage());
+                } finally {
+                    vcFactoryRgStatePropagated = false;
+                }
+            }
         }
     }
 
@@ -385,8 +683,19 @@ public class BAPBridge {
                 return false;
             }
 
-            /* Set the K2161 HUD route-information acceptance precondition. */
-            forceClusterRouteInfoState(true);
+            /*
+             * Capture/prepare VC state before enabling the shared HUD
+             * route-information acceptance overlay.
+             */
+            prepareVcPresentation();
+
+            /*
+             * Factory VC-RGI mode uses the proven K2161
+             * rgActive/RGI-valid acceptance state.
+             */
+            if (VC_RGI_ENABLED) {
+                forceClusterRouteInfoState(true);
+            }
 
             /*
              * Guidance start -- K2161 HUD route-guidance BAP transaction.
@@ -394,8 +703,18 @@ public class BAPBridge {
              * 1. RGStatus(1) - FctID 17 -> triggers startSync(0) for {17,39,23,18,49}
              * 2. Complete sync(0) window: rgType(39), descriptor(23), distance(18), exitView(49)
              */
-            traceBap("updateRGStatusAndActiveRGType", "1," + ACTIVE_RGTYPE);
-            appConnectorNavi.updateRGStatusAndActiveRGType(1, ACTIVE_RGTYPE);
+            int clusterRgStatus =
+                VC_RGI_ENABLED ? 1 : 0;
+
+            traceBap(
+                "updateRGStatusAndActiveRGType",
+                clusterRgStatus + "," + ACTIVE_RGTYPE
+            );
+
+            appConnectorNavi.updateRGStatusAndActiveRGType(
+                clusterRgStatus,
+                ACTIVE_RGTYPE
+            );
 
             /* Keep HUD active and configure whether VC may consume the shared RGI presentation. */
             configureVcPresentation();
@@ -419,11 +738,23 @@ public class BAPBridge {
 
         } catch (Throwable e) {
             Log.e(TAG, "onStart error: " + e.getClass().getName() + ": " + e.getMessage());
+
+            if (!VC_RGI_ENABLED
+                    && hudDisplayContentForced) {
+                setHudDisplayContent(false);
+            }
+
+            try { forceClusterRouteInfoState(false); }
+            catch (Throwable ignored) { }
+
+            restoreVcPresentation();
+
             try {
                 if (ownership != null && ownership.isCarPlayRouteActive()) {
                     ownership.setCarPlayRouteActive(false);
                 }
             } catch (Throwable ignored) { }
+
             return false;
         }
     }
@@ -475,8 +806,17 @@ public class BAPBridge {
             traceBap("updateLaneGuidance", "[],false");
             appConnectorNavi.updateLaneGuidance(false, new CombiBAPNaviLaneGuidanceData[0]);
 
+            if (!VC_RGI_ENABLED
+                    && hudDisplayContentForced) {
+                setHudDisplayContent(false);
+            }
+
             /* Restore the real DSI rgActive value captured when CarPlay took ownership. */
             forceClusterRouteInfoState(false);
+
+            /* Restore the user's pre-CarPlay VC presentation preference. */
+            restoreVcPresentation();
+
             /* Clear CarPlay BAP first, then reopen native RG and force the
              * exact K2161 ClusterService setter/updateAll hand-back. */
             if (ownership != null && ownership.isCarPlayRouteActive()) {
@@ -514,6 +854,12 @@ public class BAPBridge {
         Log.d(TAG, "Update delta mask=0x" + Integer.toHexString(dirty));
 
         try {
+            /*
+             * Keep dev.4 VC policy authoritative during the active
+             * CarPlay route.
+             */
+            maintainVcPresentation();
+
             /*
              * Explicit clear: count dropped to 0.  But only treat it as a real clear
              * if the route itself is inactive (routeState < 1).

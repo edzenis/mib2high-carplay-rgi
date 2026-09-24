@@ -71,6 +71,7 @@ public final class K2161RouteGuidanceOwnership {
             new K2161GatedCombiService(real);
 
         installGate.setRouteGuidanceBlocked(false);
+        installGate.setMapPresentationBlocked(false);
 
         runOnDispatcherAndWait(
             d,
@@ -158,6 +159,16 @@ public final class K2161RouteGuidanceOwnership {
                     );
 
                     /*
+                     * Native Audi MAP/FSG presentation writes are a second
+                     * writer to the VC. Block them for the same CarPlay
+                     * ownership interval so MAP cannot replace factory RGI
+                     * or defeat the HUD-only/no-navigation policy.
+                     */
+                    targetGate.setMapPresentationBlocked(
+                        requested
+                    );
+
+                    /*
                      * On hand-back to native navigation,
                      * call the exact K2161 setter again.
                      *
@@ -213,6 +224,7 @@ public final class K2161RouteGuidanceOwnership {
 
             if (gate != null) {
                 gate.setRouteGuidanceBlocked(false);
+                gate.setMapPresentationBlocked(false);
             }
 
             if (restoreCluster != null &&
