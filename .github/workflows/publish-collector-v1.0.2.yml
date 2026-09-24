@@ -1,0 +1,70 @@
+name: Publish collector v1.0.2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-collector-v1.0.2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify collector checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "e02a7bef4552aeb3228433cb482c6d1084b43830423344aabcc98cb5c6ad812f  collector/custom.sh" | sha256sum -c -
+
+      - name: Publish collector pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="collector-v1.0.2"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to do."
+            exit 0
+          fi
+
+          cat > /tmp/collector-release-notes.md <<'EOF'
+          ## MIB2 High Software Collector v1.0.2
+
+          First public pre-release of the read-only MIB2 High / MHI2 firmware research collector.
+
+          ### What it does
+
+          - runs as M.I.B. `/mod/custom.sh`;
+          - tests available commands and compatible fallback methods before collection;
+          - verifies SD-card write/read/rename/delete/sync capability before starting;
+          - supports M.I.B. `/net/mmx` and direct QNX filesystem layouts;
+          - records vehicle brand, software train/version, system information, mounts, capabilities, manifests and detailed logs;
+          - discovers and copies relevant CarPlay/iAP2, navigation, BAP, FPK/cluster and related dependency files;
+          - preserves original target filesystem paths for firmware-to-firmware comparison;
+          - syncs and verifies the SD card before displaying `SAFE TO REMOVE THE SD CARD`;
+          - does not patch or modify vehicle firmware.
+
+          ### Validation status
+
+          Syntax-tested and exercised against synthetic direct-QNX and M.I.B. `/net/mmx` layouts. Real-unit validation on additional MHI2 firmware variants is still pending, therefore this is published as a **pre-release**.
+
+          See `collector/README.md` in the repository for installation and usage instructions.
+
+          SHA-256 (`custom.sh`):
+          `e02a7bef4552aeb3228433cb482c6d1084b43830423344aabcc98cb5c6ad812f`
+          EOF
+
+          gh release create "$TAG" \
+            "collector/custom.sh#custom.sh" \
+            --target "$GITHUB_SHA" \
+            --title "MIB2 High Software Collector v1.0.2" \
+            --notes-file /tmp/collector-release-notes.md \
+            --prerelease
