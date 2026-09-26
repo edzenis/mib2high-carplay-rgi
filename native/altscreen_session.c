@@ -107,6 +107,7 @@ typedef struct {
     int worker_started;
     int screen_started;
     int show_sent;
+    int stop_requested;
     int active;
 } altscreen_state;
 
@@ -194,6 +195,47 @@ static void resolve_api(void)
         g_api.dict_key_callbacks != NULL &&
         g_api.dict_value_callbacks != NULL &&
         g_api.array_callbacks != NULL;
+
+    LOG_INFO(ALTSCREEN_SESSION_MODULE,
+             "runtime API ready=%d optional_screen_quit=%d",
+             g_api.ready, g_api.screen_send_cmd != NULL);
+
+    if (!g_api.ready) {
+        LOG_ERROR(ALTSCREEN_SESSION_MODULE,
+                  "runtime API missing setup=%d teardown=%d create=%d delete=%d screen_setup=%d security=%d process=%d stop=%d netsock_create=%d netsock_delete=%d process_data=%d send_command=%d cf_string=%d dict_copy=%d array_copy=%d dict_create=%d array_create=%d dict_get=%d dict_set=%d dict_get_i64=%d dict_set_i64=%d array_count=%d array_value=%d array_append=%d equal=%d get_type=%d array_type=%d dict_type=%d release=%d dict_keys=%d dict_values=%d array_callbacks=%d",
+                  g_api.session_setup != NULL,
+                  g_api.session_teardown != NULL,
+                  g_api.screen_create != NULL,
+                  g_api.screen_delete != NULL,
+                  g_api.screen_setup != NULL,
+                  g_api.screen_security != NULL,
+                  g_api.screen_process != NULL,
+                  g_api.screen_stop != NULL,
+                  g_api.netsock_create_native != NULL,
+                  g_api.netsock_delete != NULL,
+                  g_api.screen_process_data != NULL,
+                  g_api.send_command != NULL,
+                  g_api.string_create != NULL,
+                  g_api.dict_mutable_copy != NULL,
+                  g_api.array_mutable_copy != NULL,
+                  g_api.dict_create_mutable != NULL,
+                  g_api.array_create_mutable != NULL,
+                  g_api.dict_get_value != NULL,
+                  g_api.dict_set_value != NULL,
+                  g_api.dict_get_i64 != NULL,
+                  g_api.dict_set_i64 != NULL,
+                  g_api.array_count != NULL,
+                  g_api.array_value != NULL,
+                  g_api.array_append != NULL,
+                  g_api.equal != NULL,
+                  g_api.get_type != NULL,
+                  g_api.array_type != NULL,
+                  g_api.dict_type != NULL,
+                  g_api.release != NULL,
+                  g_api.dict_key_callbacks != NULL,
+                  g_api.dict_value_callbacks != NULL,
+                  g_api.array_callbacks != NULL);
+    }
 }
 
 static cf_ref cfs(const char *s)
@@ -502,6 +544,29 @@ fail:
     return -1;
 }
 
+static int wake_listener(uint16_t port)
+{
+    int fd;
+    struct sockaddr_in addr;
+    int rc;
+
+    if (port == 0)
+        return 0;
+
+    fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0)
+        return 0;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(port);
+
+    rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    close(fd);
+    return rc == 0;
+}
+
 static altscreen_state *find_state_receiver_locked(void *receiver)
 {
     int i;
@@ -608,6 +673,7 @@ static void *altscreen_worker(void *arg)
     struct sockaddr_in peer;
     socklen_t peer_len = sizeof(peer);
     int fd;
+    int stop_requested;
     void *net = NULL;
     void *delegate_context;
     os_status rc;
@@ -626,12 +692,24 @@ static void *altscreen_worker(void *arg)
         state->listen_fd = -1;
     }
     state->accepted_fd = fd;
+    stop_requested = state->stop_requested;
     pthread_mutex_unlock(&g_lock);
 
     if (fd < 0) {
         LOG_ERROR(ALTSCREEN_SESSION_MODULE,
-                  "accept failed receiver=%p errno=%d",
-                  state->receiver, errno);
+                  "accept failed receiver=%p errno=%d stop=%d",
+                  state->receiver, errno, stop_requested);
+        return NULL;
+    }
+
+    if (stop_requested) {
+        close(fd);
+        pthread_mutex_lock(&g_lock);
+        state->accepted_fd = -1;
+        pthread_mutex_unlock(&g_lock);
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "worker wake consumed receiver=%p teardown=1",
+                 state->receiver);
         return NULL;
     }
 
@@ -799,9 +877,12 @@ static void cleanup_altscreen(void *receiver)
     int worker_started;
     int listen_fd;
     int accepted_fd;
+    uint16_t data_port;
     void *screen;
     int screen_started;
     int show_sent;
+    int waiting_on_accept;
+    int wake_ok = 1;
 
     pthread_mutex_lock(&g_lock);
     state = find_state_receiver_locked(receiver);
@@ -813,13 +894,12 @@ static void cleanup_altscreen(void *receiver)
     worker_started = state->worker_started;
     listen_fd = state->listen_fd;
     accepted_fd = state->accepted_fd;
+    data_port = state->data_port;
     screen = state->screen;
     screen_started = state->screen_started;
     show_sent = state->show_sent;
-    if (listen_fd >= 0) {
-        close(listen_fd);
-        state->listen_fd = -1;
-    }
+    state->stop_requested = 1;
+    waiting_on_accept = worker_started && listen_fd >= 0 && accepted_fd < 0;
     if (accepted_fd >= 0)
         (void)shutdown(accepted_fd, SHUT_RDWR);
     pthread_mutex_unlock(&g_lock);
@@ -829,11 +909,32 @@ static void cleanup_altscreen(void *receiver)
     if (screen_started && screen != NULL && g_api.screen_send_cmd != NULL)
         (void)g_api.screen_send_cmd(screen, 'q', NULL, 0);
 
+    if (waiting_on_accept) {
+        wake_ok = wake_listener(data_port);
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "listener wake receiver=%p port=%u ok=%d",
+                 receiver, (unsigned int)data_port, wake_ok);
+        if (!wake_ok) {
+            (void)shutdown(listen_fd, SHUT_RDWR);
+            (void)close(listen_fd);
+            pthread_mutex_lock(&g_lock);
+            if (state->listen_fd == listen_fd)
+                state->listen_fd = -1;
+            pthread_mutex_unlock(&g_lock);
+            (void)pthread_cancel(worker);
+        }
+    }
+
     if (worker_started && !pthread_equal(worker, pthread_self()))
         (void)pthread_join(worker, NULL);
 
+    pthread_mutex_lock(&g_lock);
+    screen_started = state->screen_started;
+    pthread_mutex_unlock(&g_lock);
+
     if (screen != NULL) {
-        g_api.screen_stop(screen);
+        if (screen_started)
+            g_api.screen_stop(screen);
         altscreen_unregister_session(screen);
         g_api.screen_delete(screen);
     }
@@ -843,8 +944,8 @@ static void cleanup_altscreen(void *receiver)
     pthread_mutex_unlock(&g_lock);
 
     LOG_INFO(ALTSCREEN_SESSION_MODULE,
-             "cleanup receiver=%p route_stop=%d",
-             receiver, show_sent);
+             "cleanup receiver=%p route_stop=%d wake_ok=%d",
+             receiver, show_sent, wake_ok);
 }
 
 os_status AirPlayReceiverSessionSetup(void *receiver,
@@ -949,7 +1050,8 @@ os_status ScreenStreamProcessData(void *stream,
     self = pthread_self();
     pthread_mutex_lock(&g_lock);
     state = find_state_worker_locked(self);
-    if (state != NULL && state->screen_started && !state->show_sent) {
+    if (state != NULL && state->screen_started && !state->show_sent &&
+        !state->stop_requested) {
         state->show_sent = 1;
         should_show = 1;
     }
