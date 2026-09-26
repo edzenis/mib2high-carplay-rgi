@@ -12,9 +12,6 @@ extern "C" {
  * experimental AltScreen path keeps the complete stock ScreenStream/NvSS
  * decoder path and changes only that output byte to 58, but only while an
  * explicitly registered private type-111 screen is being started.
- *
- * Nothing is patched merely by loading the hook library.  A future/private111
- * setup path must first register its AirPlayReceiverSessionScreenRef.
  */
 
 int k2161_altscreen_register_private_screen(void *screen_session);
@@ -23,6 +20,9 @@ int k2161_altscreen_is_private_screen(void *screen_session);
 
 /* Start a registered private screen using the stock K2161 implementation. */
 int k2161_altscreen_private_start(void *screen_session, void *delegate_context);
+
+/* True only on the thread currently starting an explicitly private screen. */
+int k2161_altscreen_private_scope_active(void);
 
 /* Diagnostics. */
 int k2161_altscreen_native58_ready(void);
