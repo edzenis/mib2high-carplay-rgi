@@ -27,6 +27,7 @@ qcc -Vgcc_ntoarmv7le \
     "$SRC/observer.c" \
     "$SRC/altscreen_k2161.c" \
     "$SRC/altscreen_airplay.c" \
+    "$SRC/altscreen_private111.c" \
     "$SRC/ident_hook.c" \
     "$SRC/message_table.c" \
     "$SRC/send_hook.c" \
@@ -43,4 +44,8 @@ qcc -Vgcc_ntoarmv7le \
     -o "$OUT"
 
 echo "OUTPUT=$OUT"
-sha256sum "$OUT"
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$OUT"
+elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$OUT" 2>/dev/null || true
+fi
