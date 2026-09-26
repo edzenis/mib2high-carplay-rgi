@@ -35,7 +35,22 @@ typedef const void *(*cf_array_value_fn)(cf_ref, cf_index);
 typedef cf_ref (*cf_dict_create_mutable_fn)(cf_ref, cf_index, const void *, const void *);
 typedef void (*cf_dict_set_value_fn)(cf_ref, const void *, const void *);
 typedef os_status (*cf_dict_set_i64_fn)(cf_ref, const void *, int64_t);
+typedef cf_ref (*cf_retain_fn)(cf_ref);
 typedef void (*cf_release_fn)(cf_ref);
+typedef unsigned char (*cf_equal_fn)(cf_ref, cf_ref);
+
+typedef const void *(*cf_container_retain_cb)(void *, const void *);
+typedef void (*cf_container_release_cb)(void *, const void *);
+typedef cf_ref (*cf_container_description_cb)(const void *);
+typedef unsigned char (*cf_container_equal_cb)(const void *, const void *);
+
+typedef struct {
+    cf_index version;
+    cf_container_retain_cb retain;
+    cf_container_release_cb release;
+    cf_container_description_cb copy_description;
+    cf_container_equal_cb equal;
+} cf_dictionary_value_callbacks;
 
 typedef struct {
     platform_copy_fn server_copy;
@@ -52,7 +67,9 @@ typedef struct {
     cf_dict_create_mutable_fn dict_create_mutable;
     cf_dict_set_value_fn dict_set_value;
     cf_dict_set_i64_fn dict_set_i64;
+    cf_retain_fn retain;
     cf_release_fn release;
+    cf_equal_fn equal;
     const void *dict_key_callbacks;
     const void *dict_value_callbacks;
     const void *array_callbacks;
@@ -69,6 +86,34 @@ static void *sym(const char *name)
 {
     return dlsym(RTLD_NEXT, name);
 }
+
+static const void *local_value_retain(void *allocator, const void *object)
+{
+    (void)allocator;
+    return g_cf.retain != NULL ? g_cf.retain((cf_ref)object) : object;
+}
+
+static void local_value_release(void *allocator, const void *object)
+{
+    (void)allocator;
+    if (g_cf.release != NULL && object != NULL)
+        g_cf.release((cf_ref)object);
+}
+
+static unsigned char local_value_equal(const void *left, const void *right)
+{
+    if (g_cf.equal == NULL)
+        return left == right;
+    return g_cf.equal((cf_ref)left, (cf_ref)right);
+}
+
+static const cf_dictionary_value_callbacks g_local_value_callbacks = {
+    0,
+    local_value_retain,
+    local_value_release,
+    NULL,
+    local_value_equal
+};
 
 static void resolve_cf(void)
 {
@@ -90,13 +135,31 @@ static void resolve_cf(void)
     g_cf.dict_create_mutable = (cf_dict_create_mutable_fn)sym("CFDictionaryCreateMutable");
     g_cf.dict_set_value = (cf_dict_set_value_fn)sym("CFDictionarySetValue");
     g_cf.dict_set_i64 = (cf_dict_set_i64_fn)sym("CFDictionarySetInt64");
+    g_cf.retain = (cf_retain_fn)sym("CFRetain");
     g_cf.release = (cf_release_fn)sym("CFRelease");
+    g_cf.equal = (cf_equal_fn)sym("CFEqual");
+
     g_cf.dict_key_callbacks = sym("kCFTypeDictionaryKeyCallBacks");
+    if (g_cf.dict_key_callbacks == NULL)
+        g_cf.dict_key_callbacks = sym("kCFLDictionaryKeyCallBacksCFLTypes");
+
     g_cf.dict_value_callbacks = sym("kCFTypeDictionaryValueCallBacks");
+    if (g_cf.dict_value_callbacks == NULL)
+        g_cf.dict_value_callbacks = sym("kCFLDictionaryValueCallBacksCFLTypes");
+    if (g_cf.dict_value_callbacks == NULL)
+        g_cf.dict_value_callbacks = &g_local_value_callbacks;
+
     g_cf.array_callbacks = sym("kCFTypeArrayCallBacks");
+    if (g_cf.array_callbacks == NULL)
+        g_cf.array_callbacks = sym("kCFLArrayCallBacksCFLTypes");
+
     {
         const void **p = (const void **)sym("kCFBooleanTrue");
         const void **q = (const void **)sym("kCFBooleanFalse");
+        if (p == NULL)
+            p = (const void **)sym("kCFLBooleanTrue");
+        if (q == NULL)
+            q = (const void **)sym("kCFLBooleanFalse");
         g_cf.boolean_true = p != NULL ? *p : NULL;
         g_cf.boolean_false = q != NULL ? *q : NULL;
     }
@@ -114,12 +177,22 @@ static void resolve_cf(void)
         g_cf.dict_create_mutable != NULL &&
         g_cf.dict_set_value != NULL &&
         g_cf.dict_set_i64 != NULL &&
+        g_cf.retain != NULL &&
         g_cf.release != NULL &&
+        g_cf.equal != NULL &&
         g_cf.dict_key_callbacks != NULL &&
         g_cf.dict_value_callbacks != NULL &&
         g_cf.array_callbacks != NULL &&
         g_cf.boolean_true != NULL &&
         g_cf.boolean_false != NULL;
+
+    LOG_INFO(ALTINFO_MODULE,
+             "runtime CF ready=%d key_callbacks=%d value_callbacks=%d array_callbacks=%d booleans=%d",
+             g_cf.ready,
+             g_cf.dict_key_callbacks != NULL,
+             g_cf.dict_value_callbacks != NULL,
+             g_cf.array_callbacks != NULL,
+             g_cf.boolean_true != NULL && g_cf.boolean_false != NULL);
 }
 
 int altscreen_enabled(void)
@@ -146,21 +219,15 @@ static cf_ref cfs(const char *s)
 
 static int property_is(cf_ref property, const char *name)
 {
-    typedef unsigned char (*cf_equal_fn)(cf_ref, cf_ref);
-    static cf_equal_fn equal_fn;
     cf_ref key;
     int equal = 0;
 
-    if (property == NULL)
-        return 0;
-    if (equal_fn == NULL)
-        equal_fn = (cf_equal_fn)sym("CFEqual");
-    if (equal_fn == NULL)
+    if (property == NULL || g_cf.equal == NULL)
         return 0;
 
     key = cfs(name);
     if (key != NULL) {
-        equal = equal_fn(property, key) != 0;
+        equal = g_cf.equal(property, key) != 0;
         g_cf.release(key);
     }
     return equal;
@@ -241,8 +308,7 @@ static cf_ref make_safe_area(int w, int h)
     if (!set_i64(safe, "originXPixels", 0) ||
         !set_i64(safe, "originYPixels", 0) ||
         !set_i64(safe, "widthPixels", w) ||
-        !set_i64(safe, "heightPixels", h) ||
-        !set_bool(safe, "drawUIOutsideSafeArea", 0)) {
+        !set_i64(safe, "heightPixels", h)) {
         g_cf.release(safe);
         return NULL;
     }
