@@ -25,6 +25,7 @@ qcc -Vgcc_ntoarmv7le \
     -I"$SRC/framework" \
     -I"$SRC/routeguidance" \
     "$SRC/observer.c" \
+    "$SRC/altscreen_k2161.c" \
     "$SRC/ident_hook.c" \
     "$SRC/message_table.c" \
     "$SRC/send_hook.c" \
