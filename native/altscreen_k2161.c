@@ -15,10 +15,16 @@
 #define K2161_NVSS_OUTPUT_MAIN 59U
 #define K2161_NVSS_OUTPUT_CLUSTER 58U
 #define K2161_NVSS_DIAG_BYTES 20U
+#define K2161_SCREEN_MASTER_KEY_LEN 16U
 
 typedef int (*screen_start_fn)(void *screen_session, void *delegate_context);
 typedef void (*screen_delete_fn)(void *screen_session);
 typedef int (*nvss_video_open_fn)(void *out_handle, void *config);
+typedef void (*derive_screen_aes_fn)(const void *master_key,
+                                     size_t master_key_len,
+                                     uint64_t connection_id,
+                                     uint8_t out_key[16],
+                                     uint8_t out_iv[16]);
 
 static pthread_mutex_t g_alt_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *g_private_screens[ALTSCREEN_MAX_PRIVATE_SCREENS];
@@ -26,10 +32,14 @@ static pthread_t g_patch_owner;
 static int g_patch_owner_valid;
 static unsigned int g_patch_depth;
 static unsigned int g_nvss_patch_count;
+static void *g_main_delegate_context;
+static uint8_t g_screen_master_key[K2161_SCREEN_MASTER_KEY_LEN];
+static int g_screen_master_key_valid;
 
 static screen_start_fn g_real_screen_start;
 static screen_delete_fn g_real_screen_delete;
 static nvss_video_open_fn g_real_nvss_open;
+static derive_screen_aes_fn g_real_derive_screen_aes;
 
 static void resolve_symbols(void)
 {
@@ -44,6 +54,10 @@ static void resolve_symbols(void)
     if (g_real_nvss_open == NULL) {
         g_real_nvss_open = (nvss_video_open_fn)dlsym(
             RTLD_NEXT, "NvSSVideoOpen");
+    }
+    if (g_real_derive_screen_aes == NULL) {
+        g_real_derive_screen_aes = (derive_screen_aes_fn)dlsym(
+            RTLD_NEXT, "AirPlay_DeriveAESKeySHA512ForScreen");
     }
 }
 
@@ -185,6 +199,62 @@ int k2161_altscreen_private_scope_active(void)
     return native58_scope_active_for_current_thread();
 }
 
+void *k2161_altscreen_main_delegate_context(void)
+{
+    void *ctx;
+
+    pthread_mutex_lock(&g_alt_lock);
+    ctx = g_main_delegate_context;
+    pthread_mutex_unlock(&g_alt_lock);
+    return ctx;
+}
+
+int k2161_altscreen_private_aes_ready(void)
+{
+    int ready;
+
+    resolve_symbols();
+    pthread_mutex_lock(&g_alt_lock);
+    ready = g_screen_master_key_valid && g_real_derive_screen_aes != NULL;
+    pthread_mutex_unlock(&g_alt_lock);
+    return ready;
+}
+
+int k2161_altscreen_derive_private_aes(uint64_t stream_connection_id,
+                                       uint8_t out_key[16],
+                                       uint8_t out_iv[16])
+{
+    uint8_t master[K2161_SCREEN_MASTER_KEY_LEN];
+    int ready;
+
+    if (stream_connection_id == 0 || out_key == NULL || out_iv == NULL)
+        return 0;
+
+    resolve_symbols();
+
+    pthread_mutex_lock(&g_alt_lock);
+    ready = g_screen_master_key_valid && g_real_derive_screen_aes != NULL;
+    if (ready)
+        memcpy(master, g_screen_master_key, sizeof(master));
+    pthread_mutex_unlock(&g_alt_lock);
+
+    if (!ready) {
+        LOG_ERROR(ALTSCREEN_MODULE,
+                  "private111 AES derive refused conn=%llu reason=master_key_not_captured",
+                  (unsigned long long)stream_connection_id);
+        return 0;
+    }
+
+    g_real_derive_screen_aes(master, sizeof(master), stream_connection_id,
+                             out_key, out_iv);
+    memset(master, 0, sizeof(master));
+
+    LOG_INFO(ALTSCREEN_MODULE,
+             "private111 AES derived conn=%llu source=stock_screen_master",
+             (unsigned long long)stream_connection_id);
+    return 1;
+}
+
 int k2161_altscreen_native58_ready(void)
 {
     resolve_symbols();
@@ -222,8 +292,8 @@ int k2161_altscreen_private_start(void *screen_session, void *delegate_context)
         return -1;
 
     LOG_INFO(ALTSCREEN_MODULE,
-             "private111 start screen=%p native58_scope=1",
-             screen_session);
+             "private111 start screen=%p native58_scope=1 delegate=%p",
+             screen_session, delegate_context);
 
     rc = g_real_screen_start(screen_session, delegate_context);
     end_native58_scope();
@@ -245,8 +315,15 @@ int AirPlayReceiverSessionScreen_StartSession(void *screen_session,
         return -1;
 
     private_screen = k2161_altscreen_is_private_screen(screen_session);
-    if (!private_screen)
+    if (!private_screen) {
+        pthread_mutex_lock(&g_alt_lock);
+        g_main_delegate_context = delegate_context;
+        pthread_mutex_unlock(&g_alt_lock);
+        LOG_INFO(ALTSCREEN_MODULE,
+                 "main110 delegate captured context=%p",
+                 delegate_context);
         return g_real_screen_start(screen_session, delegate_context);
+    }
 
     if (!begin_native58_scope())
         return -1;
@@ -261,6 +338,31 @@ void AirPlayReceiverSessionScreen_Delete(void *screen_session)
     k2161_altscreen_unregister_private_screen(screen_session);
     if (g_real_screen_delete != NULL)
         g_real_screen_delete(screen_session);
+}
+
+void AirPlay_DeriveAESKeySHA512ForScreen(const void *master_key,
+                                         size_t master_key_len,
+                                         uint64_t connection_id,
+                                         uint8_t out_key[16],
+                                         uint8_t out_iv[16])
+{
+    resolve_symbols();
+
+    if (master_key != NULL && master_key_len == K2161_SCREEN_MASTER_KEY_LEN) {
+        pthread_mutex_lock(&g_alt_lock);
+        memcpy(g_screen_master_key, master_key, K2161_SCREEN_MASTER_KEY_LEN);
+        g_screen_master_key_valid = 1;
+        pthread_mutex_unlock(&g_alt_lock);
+        LOG_INFO(ALTSCREEN_MODULE,
+                 "main110 screen AES master captured conn=%llu len=%u",
+                 (unsigned long long)connection_id,
+                 (unsigned int)master_key_len);
+    }
+
+    if (g_real_derive_screen_aes != NULL) {
+        g_real_derive_screen_aes(master_key, master_key_len, connection_id,
+                                 out_key, out_iv);
+    }
 }
 
 int NvSSVideoOpen(void *out_handle, void *config)
