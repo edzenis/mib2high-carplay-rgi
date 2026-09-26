@@ -342,6 +342,12 @@ int k2161_altscreen_private_start(void *screen_session, void *delegate_context)
                   screen_session);
         return -1;
     }
+    if (!k2161_altscreen_apply_main_time_sync(screen_session)) {
+        LOG_ERROR(ALTSCREEN_MODULE,
+                  "private111 start refused screen=%p reason=time_sync_not_ready",
+                  screen_session);
+        return -1;
+    }
     if (!begin_native58_scope())
         return -1;
 
