@@ -49,13 +49,29 @@ typedef const void *(*cf_dict_get_value_fn)(cf_ref, const void *);
 typedef void (*cf_dict_set_value_fn)(cf_ref, const void *, const void *);
 typedef int64_t (*cf_dict_get_i64_fn)(cf_ref, const void *, os_status *);
 typedef os_status (*cf_dict_set_i64_fn)(cf_ref, const void *, int64_t);
+typedef cf_index (*cf_dict_count_fn)(cf_ref);
+typedef void (*cf_dict_get_keys_values_fn)(cf_ref, const void **, const void **);
 typedef cf_index (*cf_array_count_fn)(cf_ref);
 typedef const void *(*cf_array_value_fn)(cf_ref, cf_index);
 typedef void (*cf_array_append_fn)(cf_ref, const void *);
 typedef unsigned char (*cf_equal_fn)(cf_ref, cf_ref);
 typedef cf_type_id (*cf_get_type_fn)(cf_ref);
 typedef cf_type_id (*cf_type_getter_fn)(void);
+typedef cf_ref (*cf_retain_fn)(cf_ref);
 typedef void (*cf_release_fn)(cf_ref);
+
+typedef const void *(*cf_container_retain_cb)(void *, const void *);
+typedef void (*cf_container_release_cb)(void *, const void *);
+typedef cf_ref (*cf_container_description_cb)(const void *);
+typedef unsigned char (*cf_container_equal_cb)(const void *, const void *);
+
+typedef struct {
+    cf_index version;
+    cf_container_retain_cb retain;
+    cf_container_release_cb release;
+    cf_container_description_cb copy_description;
+    cf_container_equal_cb equal;
+} cf_dictionary_value_callbacks;
 
 typedef struct {
     session_setup_fn session_setup;
@@ -81,6 +97,8 @@ typedef struct {
     cf_dict_set_value_fn dict_set_value;
     cf_dict_get_i64_fn dict_get_i64;
     cf_dict_set_i64_fn dict_set_i64;
+    cf_dict_count_fn dict_count;
+    cf_dict_get_keys_values_fn dict_get_keys_values;
     cf_array_count_fn array_count;
     cf_array_value_fn array_value;
     cf_array_append_fn array_append;
@@ -88,6 +106,7 @@ typedef struct {
     cf_get_type_fn get_type;
     cf_type_getter_fn array_type;
     cf_type_getter_fn dict_type;
+    cf_retain_fn retain;
     cf_release_fn release;
     const void *dict_key_callbacks;
     const void *dict_value_callbacks;
@@ -114,6 +133,78 @@ typedef struct {
 static altscreen_api g_api;
 static altscreen_state g_states[ALTSCREEN_MAX_STATES];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static const void *local_value_retain(void *allocator, const void *object)
+{
+    (void)allocator;
+    return g_api.retain != NULL ? g_api.retain((cf_ref)object) : object;
+}
+
+static void local_value_release(void *allocator, const void *object)
+{
+    (void)allocator;
+    if (g_api.release != NULL && object != NULL)
+        g_api.release((cf_ref)object);
+}
+
+static unsigned char local_value_equal(const void *left, const void *right)
+{
+    if (g_api.equal == NULL)
+        return left == right;
+    return g_api.equal((cf_ref)left, (cf_ref)right);
+}
+
+static const cf_dictionary_value_callbacks g_local_value_callbacks = {
+    0,
+    local_value_retain,
+    local_value_release,
+    NULL,
+    local_value_equal
+};
+
+static cf_ref dict_mutable_copy_compat(cf_ref allocator, cf_index capacity, cf_ref source)
+{
+    cf_ref out;
+    cf_index count;
+    cf_index i;
+    const void **keys = NULL;
+    const void **values = NULL;
+
+    (void)allocator;
+    (void)capacity;
+
+    if (source == NULL || g_api.dict_create_mutable == NULL ||
+        g_api.dict_count == NULL || g_api.dict_get_keys_values == NULL ||
+        g_api.dict_set_value == NULL)
+        return NULL;
+
+    out = g_api.dict_create_mutable(NULL, 0,
+                                    g_api.dict_key_callbacks,
+                                    g_api.dict_value_callbacks);
+    if (out == NULL)
+        return NULL;
+
+    count = g_api.dict_count(source);
+    if (count <= 0)
+        return out;
+
+    keys = (const void **)malloc((size_t)count * sizeof(*keys));
+    values = (const void **)malloc((size_t)count * sizeof(*values));
+    if (keys == NULL || values == NULL) {
+        free(keys);
+        free(values);
+        g_api.release(out);
+        return NULL;
+    }
+
+    g_api.dict_get_keys_values(source, keys, values);
+    for (i = 0; i < count; ++i)
+        g_api.dict_set_value(out, keys[i], values[i]);
+
+    free(keys);
+    free(values);
+    return out;
+}
 
 static void *sym(const char *name)
 {
@@ -142,7 +233,6 @@ static void resolve_api(void)
     g_api.send_command = (send_command_fn)sym("AirPlayReceiverSessionSendCommand");
 
     g_api.string_create = (cf_string_create_fn)sym("CFStringCreateWithCString");
-    g_api.dict_mutable_copy = (cf_dict_mutable_copy_fn)sym("CFDictionaryCreateMutableCopy");
     g_api.array_mutable_copy = (cf_array_mutable_copy_fn)sym("CFArrayCreateMutableCopy");
     g_api.dict_create_mutable = (cf_dict_create_mutable_fn)sym("CFDictionaryCreateMutable");
     g_api.array_create_mutable = (cf_array_create_mutable_fn)sym("CFArrayCreateMutable");
@@ -150,6 +240,8 @@ static void resolve_api(void)
     g_api.dict_set_value = (cf_dict_set_value_fn)sym("CFDictionarySetValue");
     g_api.dict_get_i64 = (cf_dict_get_i64_fn)sym("CFDictionaryGetInt64");
     g_api.dict_set_i64 = (cf_dict_set_i64_fn)sym("CFDictionarySetInt64");
+    g_api.dict_count = (cf_dict_count_fn)sym("CFDictionaryGetCount");
+    g_api.dict_get_keys_values = (cf_dict_get_keys_values_fn)sym("CFDictionaryGetKeysAndValues");
     g_api.array_count = (cf_array_count_fn)sym("CFArrayGetCount");
     g_api.array_value = (cf_array_value_fn)sym("CFArrayGetValueAtIndex");
     g_api.array_append = (cf_array_append_fn)sym("CFArrayAppendValue");
@@ -157,10 +249,26 @@ static void resolve_api(void)
     g_api.get_type = (cf_get_type_fn)sym("CFGetTypeID");
     g_api.array_type = (cf_type_getter_fn)sym("CFArrayGetTypeID");
     g_api.dict_type = (cf_type_getter_fn)sym("CFDictionaryGetTypeID");
+    g_api.retain = (cf_retain_fn)sym("CFRetain");
     g_api.release = (cf_release_fn)sym("CFRelease");
+
     g_api.dict_key_callbacks = sym("kCFTypeDictionaryKeyCallBacks");
+    if (g_api.dict_key_callbacks == NULL)
+        g_api.dict_key_callbacks = sym("kCFLDictionaryKeyCallBacksCFLTypes");
+
     g_api.dict_value_callbacks = sym("kCFTypeDictionaryValueCallBacks");
+    if (g_api.dict_value_callbacks == NULL)
+        g_api.dict_value_callbacks = sym("kCFLDictionaryValueCallBacksCFLTypes");
+    if (g_api.dict_value_callbacks == NULL)
+        g_api.dict_value_callbacks = &g_local_value_callbacks;
+
     g_api.array_callbacks = sym("kCFTypeArrayCallBacks");
+    if (g_api.array_callbacks == NULL)
+        g_api.array_callbacks = sym("kCFLArrayCallBacksCFLTypes");
+
+    g_api.dict_mutable_copy = (cf_dict_mutable_copy_fn)sym("CFDictionaryCreateMutableCopy");
+    if (g_api.dict_mutable_copy == NULL)
+        g_api.dict_mutable_copy = dict_mutable_copy_compat;
 
     g_api.ready =
         g_api.session_setup != NULL &&
@@ -184,6 +292,8 @@ static void resolve_api(void)
         g_api.dict_set_value != NULL &&
         g_api.dict_get_i64 != NULL &&
         g_api.dict_set_i64 != NULL &&
+        g_api.dict_count != NULL &&
+        g_api.dict_get_keys_values != NULL &&
         g_api.array_count != NULL &&
         g_api.array_value != NULL &&
         g_api.array_append != NULL &&
@@ -191,18 +301,20 @@ static void resolve_api(void)
         g_api.get_type != NULL &&
         g_api.array_type != NULL &&
         g_api.dict_type != NULL &&
+        g_api.retain != NULL &&
         g_api.release != NULL &&
         g_api.dict_key_callbacks != NULL &&
         g_api.dict_value_callbacks != NULL &&
         g_api.array_callbacks != NULL;
 
     LOG_INFO(ALTSCREEN_SESSION_MODULE,
-             "runtime API ready=%d optional_screen_quit=%d",
-             g_api.ready, g_api.screen_send_cmd != NULL);
+             "runtime API ready=%d optional_screen_quit=%d dict_copy=%s",
+             g_api.ready, g_api.screen_send_cmd != NULL,
+             sym("CFDictionaryCreateMutableCopy") != NULL ? "native" : "compat");
 
     if (!g_api.ready) {
         LOG_ERROR(ALTSCREEN_SESSION_MODULE,
-                  "runtime API missing setup=%d teardown=%d create=%d delete=%d screen_setup=%d security=%d process=%d stop=%d netsock_create=%d netsock_delete=%d process_data=%d send_command=%d cf_string=%d dict_copy=%d array_copy=%d dict_create=%d array_create=%d dict_get=%d dict_set=%d dict_get_i64=%d dict_set_i64=%d array_count=%d array_value=%d array_append=%d equal=%d get_type=%d array_type=%d dict_type=%d release=%d dict_keys=%d dict_values=%d array_callbacks=%d",
+                  "runtime API missing setup=%d teardown=%d create=%d delete=%d screen_setup=%d security=%d process=%d stop=%d netsock_create=%d netsock_delete=%d process_data=%d send_command=%d cf_string=%d dict_copy=%d array_copy=%d dict_create=%d array_create=%d dict_get=%d dict_set=%d dict_get_i64=%d dict_set_i64=%d dict_count=%d dict_keys_values=%d array_count=%d array_value=%d array_append=%d equal=%d get_type=%d array_type=%d dict_type=%d retain=%d release=%d dict_keys=%d dict_values=%d array_callbacks=%d",
                   g_api.session_setup != NULL,
                   g_api.session_teardown != NULL,
                   g_api.screen_create != NULL,
@@ -224,6 +336,8 @@ static void resolve_api(void)
                   g_api.dict_set_value != NULL,
                   g_api.dict_get_i64 != NULL,
                   g_api.dict_set_i64 != NULL,
+                  g_api.dict_count != NULL,
+                  g_api.dict_get_keys_values != NULL,
                   g_api.array_count != NULL,
                   g_api.array_value != NULL,
                   g_api.array_append != NULL,
@@ -231,6 +345,7 @@ static void resolve_api(void)
                   g_api.get_type != NULL,
                   g_api.array_type != NULL,
                   g_api.dict_type != NULL,
+                  g_api.retain != NULL,
                   g_api.release != NULL,
                   g_api.dict_key_callbacks != NULL,
                   g_api.dict_value_callbacks != NULL,
@@ -447,8 +562,6 @@ static cf_ref merge_altscreen_response(cf_ref stock_response, uint16_t port)
     cf_ref streams = NULL;
     cf_ref out_streams = NULL;
     cf_ref alt_stream = NULL;
-    cf_ref enabled = NULL;
-    cf_ref out_enabled = NULL;
 
     if (stock_response != NULL && is_dict(stock_response))
         response = g_api.dict_mutable_copy(NULL, 0, stock_response);
@@ -474,30 +587,11 @@ static cf_ref merge_altscreen_response(cf_ref stock_response, uint16_t port)
     if (!dict_set_obj(response, "streams", out_streams))
         goto fail;
 
-    enabled = dict_get(response, "enabledFeatures");
-    if (is_array(enabled))
-        out_enabled = g_api.array_mutable_copy(NULL, g_api.array_count(enabled) + 2, enabled);
-    else
-        out_enabled = new_array();
-    if (out_enabled == NULL)
-        goto fail;
-
-    if (!array_contains_string(out_enabled, "altScreen") &&
-        !append_string(out_enabled, "altScreen"))
-        goto fail;
-    if (!array_contains_string(out_enabled, "viewAreas") &&
-        !append_string(out_enabled, "viewAreas"))
-        goto fail;
-    if (!dict_set_obj(response, "enabledFeatures", out_enabled))
-        goto fail;
-
-    g_api.release(out_enabled);
     g_api.release(alt_stream);
     g_api.release(out_streams);
     return response;
 
 fail:
-    if (out_enabled != NULL) g_api.release(out_enabled);
     if (alt_stream != NULL) g_api.release(alt_stream);
     if (out_streams != NULL) g_api.release(out_streams);
     if (response != NULL) g_api.release(response);
@@ -1008,7 +1102,7 @@ os_status AirPlayReceiverSessionSetup(void *receiver,
     *out_response = final_response;
 
     LOG_WARN(ALTSCREEN_SESSION_MODULE,
-             "SETUP_READY receiver=%p dataPort=%u enabledFeatures=altScreen,viewAreas primary_untouched=1",
+             "SETUP_READY receiver=%p dataPort=%u enabledFeatures=stock_unchanged primary_untouched=1",
              receiver, (unsigned int)alt_port);
     return 0;
 }
