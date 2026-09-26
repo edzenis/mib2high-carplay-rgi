@@ -34,6 +34,14 @@ int k2161_altscreen_private_scope_active(void);
 void *k2161_altscreen_main_delegate_context(void);
 
 /*
+ * Stock main110 installs a copied-by-value three-word time synchronizer on its
+ * SessionScreen before processing frames.  Capture that exact object and
+ * install the same callbacks/context on private111.
+ */
+int k2161_altscreen_time_sync_ready(void);
+int k2161_altscreen_apply_main_time_sync(void *screen_session);
+
+/*
  * AirPlay_DeriveAESKeySHA512ForScreen is observed during the stock main110
  * setup.  The captured screen master key is then reused through the stock
  * derivation helper for the independent type111 streamConnectionID.
