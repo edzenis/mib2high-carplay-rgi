@@ -6,13 +6,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "altscreen_airplay.h"
+#include "altscreen.h"
 #include "framework/logging.h"
 
 #define ALTINFO_MODULE "AltScreenInfo"
-#define ALTSCREEN_ENABLE_MARKER "/mnt/app/carplay_altscreen_native58"
-#define ALTSCREEN_UUID "E0CB6FB0-0000-0000-0000-0000C0FFEE58"
-#define ALTSCREEN_INITIAL_URL "maps:/car/instrumentcluster/map"
+#define ALTSCREEN_ENABLE_MARKER "/mnt/app/carplay_altscreen"
 #define ALTSCREEN_URL_CARD "maps:/car/instrumentcluster/instructioncard"
 #define ALTSCREEN_URL_BASE "maps:/car/instrumentcluster"
 #define ALTSCREEN_DEFAULT_W 800
@@ -124,16 +122,16 @@ static void resolve_cf(void)
         g_cf.boolean_false != NULL;
 }
 
-int k2161_altscreen_enabled(void)
+int altscreen_enabled(void)
 {
-    const char *env = getenv("K2161_ALTSCREEN_NATIVE58");
+    const char *env = getenv("CARPLAY_ALTSCREEN");
 
     if (env != NULL && env[0] == '1' && env[1] == '\0')
         return 1;
     return access(ALTSCREEN_ENABLE_MARKER, F_OK) == 0;
 }
 
-int k2161_altscreen_info_ready(void)
+int altscreen_info_ready(void)
 {
     resolve_cf();
     return g_cf.ready;
@@ -307,7 +305,7 @@ static cf_ref make_alt_display(void)
         !set_i64(alt, "initialViewArea", 0) ||
         !set_obj(alt, "adjacentViewAreas", adjacent) ||
         !set_obj(alt, "viewAreas", view_areas) ||
-        !set_i64(alt, "type", 111) ||
+        !set_i64(alt, "type", AIRPLAY_STREAM_TYPE_ALT_SCREEN) ||
         !set_bool(alt, "showsInstruments", 1) ||
         !set_string(alt, "initialURL", ALTSCREEN_INITIAL_URL))
         goto fail;
@@ -331,14 +329,14 @@ static cf_ref add_alt_display(cf_ref stock)
 
     if (!is_array(stock)) {
         LOG_ERROR(ALTINFO_MODULE,
-                  "ALTINFO refused property=displays reason=stock_not_array main110_untouched=1");
+                  "refused property=displays reason=stock_not_array primary_untouched=1");
         return NULL;
     }
 
     count = g_cf.array_count(stock);
     if (count < 1 || !is_dict((cf_ref)g_cf.array_value(stock, 0))) {
         LOG_ERROR(ALTINFO_MODULE,
-                  "ALTINFO refused property=displays reason=no_main_display main110_untouched=1");
+                  "refused property=displays reason=no_main_display primary_untouched=1");
         return NULL;
     }
 
@@ -356,7 +354,7 @@ static cf_ref add_alt_display(cf_ref stock)
     if (!g_info_logged) {
         g_info_logged = 1;
         LOG_WARN(ALTINFO_MODULE,
-                 "ALTINFO type111 advertised uuid=%s geometry=%dx%d fps=%d main_displays=%ld",
+                 "display advertised uuid=%s geometry=%dx%d fps=%d primary_displays=%ld",
                  ALTSCREEN_UUID, ALTSCREEN_DEFAULT_W, ALTSCREEN_DEFAULT_H,
                  ALTSCREEN_DEFAULT_FPS, (long)count);
     }
@@ -392,7 +390,7 @@ static cf_ref patch_property_result(cf_ref stock, cf_ref property)
 {
     cf_ref patched;
 
-    if (!k2161_altscreen_enabled() || !g_cf.ready)
+    if (!altscreen_enabled() || !g_cf.ready)
         return stock;
 
     if (property_is(property, "displays")) {
@@ -409,7 +407,7 @@ static cf_ref patch_property_result(cf_ref stock, cf_ref property)
         patched = make_cluster_urls();
         if (patched != NULL) {
             if (stock != NULL) g_cf.release(stock);
-            LOG_INFO(ALTINFO_MODULE, "ALTINFO cluster URL capability returned");
+            LOG_INFO(ALTINFO_MODULE, "cluster URL capability returned");
             return patched;
         }
     }
