@@ -170,7 +170,6 @@ static void resolve_api(void)
         g_api.screen_security != NULL &&
         g_api.screen_process != NULL &&
         g_api.screen_stop != NULL &&
-        g_api.screen_send_cmd != NULL &&
         g_api.netsock_create_native != NULL &&
         g_api.netsock_delete != NULL &&
         g_api.screen_process_data != NULL &&
