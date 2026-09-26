@@ -17,8 +17,16 @@
 #define K2161_NVSS_DIAG_BYTES 20U
 #define K2161_SCREEN_MASTER_KEY_LEN 16U
 
+typedef struct {
+    void *context;
+    void *get_synchronized_ntp_time;
+    void *get_up_ticks_near_synchronized_ntp_time;
+} k2161_screen_time_sync;
+
 typedef int (*screen_start_fn)(void *screen_session, void *delegate_context);
 typedef void (*screen_delete_fn)(void *screen_session);
+typedef void (*screen_time_sync_fn)(void *screen_session,
+                                    const k2161_screen_time_sync *sync);
 typedef int (*nvss_video_open_fn)(void *out_handle, void *config);
 typedef void (*derive_screen_aes_fn)(const void *master_key,
                                      size_t master_key_len,
@@ -33,11 +41,14 @@ static int g_patch_owner_valid;
 static unsigned int g_patch_depth;
 static unsigned int g_nvss_patch_count;
 static void *g_main_delegate_context;
+static k2161_screen_time_sync g_main_time_sync;
+static int g_main_time_sync_valid;
 static uint8_t g_screen_master_key[K2161_SCREEN_MASTER_KEY_LEN];
 static int g_screen_master_key_valid;
 
 static screen_start_fn g_real_screen_start;
 static screen_delete_fn g_real_screen_delete;
+static screen_time_sync_fn g_real_time_sync;
 static nvss_video_open_fn g_real_nvss_open;
 static derive_screen_aes_fn g_real_derive_screen_aes;
 
@@ -50,6 +61,10 @@ static void resolve_symbols(void)
     if (g_real_screen_delete == NULL) {
         g_real_screen_delete = (screen_delete_fn)dlsym(
             RTLD_NEXT, "AirPlayReceiverSessionScreen_Delete");
+    }
+    if (g_real_time_sync == NULL) {
+        g_real_time_sync = (screen_time_sync_fn)dlsym(
+            RTLD_NEXT, "AirPlayReceiverSessionScreen_SetTimeSynchronizer");
     }
     if (g_real_nvss_open == NULL) {
         g_real_nvss_open = (nvss_video_open_fn)dlsym(
@@ -209,6 +224,45 @@ void *k2161_altscreen_main_delegate_context(void)
     return ctx;
 }
 
+int k2161_altscreen_time_sync_ready(void)
+{
+    int ready;
+
+    resolve_symbols();
+    pthread_mutex_lock(&g_alt_lock);
+    ready = g_main_time_sync_valid && g_real_time_sync != NULL;
+    pthread_mutex_unlock(&g_alt_lock);
+    return ready;
+}
+
+int k2161_altscreen_apply_main_time_sync(void *screen_session)
+{
+    k2161_screen_time_sync sync;
+    int ready;
+
+    if (screen_session == NULL)
+        return 0;
+    resolve_symbols();
+
+    pthread_mutex_lock(&g_alt_lock);
+    ready = g_main_time_sync_valid && g_real_time_sync != NULL;
+    if (ready)
+        sync = g_main_time_sync;
+    pthread_mutex_unlock(&g_alt_lock);
+
+    if (!ready) {
+        LOG_ERROR(ALTSCREEN_MODULE,
+                  "private111 time sync refused reason=main_sync_not_captured");
+        return 0;
+    }
+
+    g_real_time_sync(screen_session, &sync);
+    LOG_INFO(ALTSCREEN_MODULE,
+             "private111 time sync applied screen=%p context=%p",
+             screen_session, sync.context);
+    return 1;
+}
+
 int k2161_altscreen_private_aes_ready(void)
 {
     int ready;
@@ -330,6 +384,30 @@ int AirPlayReceiverSessionScreen_StartSession(void *screen_session,
     rc = g_real_screen_start(screen_session, delegate_context);
     end_native58_scope();
     return rc;
+}
+
+void AirPlayReceiverSessionScreen_SetTimeSynchronizer(
+    void *screen_session,
+    const k2161_screen_time_sync *sync)
+{
+    int private_screen;
+
+    resolve_symbols();
+    if (g_real_time_sync == NULL)
+        return;
+
+    private_screen = k2161_altscreen_is_private_screen(screen_session);
+    if (!private_screen && sync != NULL) {
+        pthread_mutex_lock(&g_alt_lock);
+        g_main_time_sync = *sync;
+        g_main_time_sync_valid = 1;
+        pthread_mutex_unlock(&g_alt_lock);
+        LOG_INFO(ALTSCREEN_MODULE,
+                 "main110 time sync captured screen=%p context=%p",
+                 screen_session, sync->context);
+    }
+
+    g_real_time_sync(screen_session, sync);
 }
 
 void AirPlayReceiverSessionScreen_Delete(void *screen_session)
