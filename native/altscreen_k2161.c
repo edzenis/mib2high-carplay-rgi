@@ -180,6 +180,11 @@ static int native58_scope_active_for_current_thread(void)
     return active;
 }
 
+int k2161_altscreen_private_scope_active(void)
+{
+    return native58_scope_active_for_current_thread();
+}
+
 int k2161_altscreen_native58_ready(void)
 {
     resolve_symbols();
@@ -196,12 +201,6 @@ unsigned int k2161_altscreen_nvss_patch_count(void)
     return count;
 }
 
-/*
- * Deterministic entry point for the future private type-111 setup path.
- * The stock StartSession creates and starts its own ScreenStream synchronously;
- * while it is executing, the NvSSVideoOpen interposer below is allowed to
- * rewrite only the private stream's output target.
- */
 int k2161_altscreen_private_start(void *screen_session, void *delegate_context)
 {
     int rc;
@@ -235,12 +234,6 @@ int k2161_altscreen_private_start(void *screen_session, void *delegate_context)
     return rc;
 }
 
-/*
- * Optional symbol interposer.  It is still fail-closed because an ordinary
- * stock screen is never in g_private_screens.  Private111 code may call
- * k2161_altscreen_private_start() directly instead of relying on ELF
- * preemption of libairplay's internal call.
- */
 int AirPlayReceiverSessionScreen_StartSession(void *screen_session,
                                                void *delegate_context)
 {
@@ -270,12 +263,6 @@ void AirPlayReceiverSessionScreen_Delete(void *screen_session)
         g_real_screen_delete(screen_session);
 }
 
-/*
- * Stock K2161 ScreenStreamStart() constructs the NvSS open block on its stack.
- * Reverse engineering of MHI2_ER_AUG22_K2161_MU1421 shows byte +0x0a is 59.
- * We deliberately require that exact stock value before changing it to 58.
- * Any unexpected firmware/layout therefore falls through untouched.
- */
 int NvSSVideoOpen(void *out_handle, void *config)
 {
     uint8_t *cfg = (uint8_t *)config;
@@ -314,8 +301,6 @@ int NvSSVideoOpen(void *out_handle, void *config)
                 cfg, K2161_NVSS_DIAG_BYTES);
 
     rc = g_real_nvss_open(out_handle, config);
-
-    /* The open block is owned by the stock caller. Restore it immediately. */
     cfg[K2161_NVSS_OUTPUT_OFFSET] = saved;
 
     pthread_mutex_lock(&g_alt_lock);
