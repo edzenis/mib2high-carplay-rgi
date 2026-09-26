@@ -1,6 +1,8 @@
 #ifndef K2161_ALTSCREEN_K2161_H
 #define K2161_ALTSCREEN_K2161_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +25,23 @@ int k2161_altscreen_private_start(void *screen_session, void *delegate_context);
 
 /* True only on the thread currently starting an explicitly private screen. */
 int k2161_altscreen_private_scope_active(void);
+
+/*
+ * Stock main110 StartSession provides the application delegate context that
+ * ScreenStreamSetDelegateContext receives.  We remember it rather than
+ * guessing an AirPlayReceiverSessionPrivate structure offset.
+ */
+void *k2161_altscreen_main_delegate_context(void);
+
+/*
+ * AirPlay_DeriveAESKeySHA512ForScreen is observed during the stock main110
+ * setup.  The captured screen master key is then reused through the stock
+ * derivation helper for the independent type111 streamConnectionID.
+ */
+int k2161_altscreen_private_aes_ready(void);
+int k2161_altscreen_derive_private_aes(uint64_t stream_connection_id,
+                                        uint8_t out_key[16],
+                                        uint8_t out_iv[16]);
 
 /* Diagnostics. */
 int k2161_altscreen_native58_ready(void);
