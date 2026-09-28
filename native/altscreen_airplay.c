@@ -233,6 +233,19 @@ static int property_is(cf_ref property, const char *name)
     return equal;
 }
 
+static const char *tracked_property_name(cf_ref property)
+{
+    if (!g_cf.ready)
+        return NULL;
+    if (property_is(property, "displays"))
+        return "displays";
+    if (property_is(property, "altScreenURLs"))
+        return "altScreenURLs";
+    if (property_is(property, "altScreenSuggestUIURLs"))
+        return "altScreenSuggestUIURLs";
+    return NULL;
+}
+
 static int is_array(cf_ref obj)
 {
     return obj != NULL && g_cf.get_type(obj) == g_cf.array_type();
@@ -417,6 +430,15 @@ static cf_ref add_alt_display(cf_ref stock)
     g_cf.array_append(out, alt);
     g_cf.release(alt);
 
+    LOG_INFO(ALTINFO_MODULE,
+             "PROPERTY_RETURN property=displays stock_count=%ld returned_count=%ld "
+             "alt_uuid=%s type=%d geometry=%dx%d physical=0x0 features=0 "
+             "primaryInputDevice=0 showsInstruments=1 initialURL=%s",
+             (long)count, (long)(count + 1), ALTSCREEN_UUID,
+             AIRPLAY_STREAM_TYPE_ALT_SCREEN,
+             ALTSCREEN_DEFAULT_W, ALTSCREEN_DEFAULT_H,
+             ALTSCREEN_INITIAL_URL);
+
     if (!g_info_logged) {
         g_info_logged = 1;
         LOG_WARN(ALTINFO_MODULE,
@@ -455,11 +477,14 @@ static cf_ref make_cluster_urls(void)
 static cf_ref patch_property_result(cf_ref stock, cf_ref property)
 {
     cf_ref patched;
+    const char *name;
 
     if (!altscreen_enabled() || !g_cf.ready)
         return stock;
 
-    if (property_is(property, "displays")) {
+    name = tracked_property_name(property);
+
+    if (name != NULL && strcmp(name, "displays") == 0) {
         patched = add_alt_display(stock);
         if (patched != NULL) {
             if (stock != NULL) g_cf.release(stock);
@@ -468,12 +493,16 @@ static cf_ref patch_property_result(cf_ref stock, cf_ref property)
         return stock;
     }
 
-    if (property_is(property, "altScreenURLs") ||
-        property_is(property, "altScreenSuggestUIURLs")) {
+    if (name != NULL &&
+        (strcmp(name, "altScreenURLs") == 0 ||
+         strcmp(name, "altScreenSuggestUIURLs") == 0)) {
         patched = make_cluster_urls();
         if (patched != NULL) {
             if (stock != NULL) g_cf.release(stock);
-            LOG_INFO(ALTINFO_MODULE, "cluster URL capability returned");
+            LOG_INFO(ALTINFO_MODULE,
+                     "PROPERTY_RETURN property=%s count=3 urls=%s|%s|%s",
+                     name, ALTSCREEN_INITIAL_URL,
+                     ALTSCREEN_URL_CARD, ALTSCREEN_URL_BASE);
             return patched;
         }
     }
@@ -487,10 +516,15 @@ cf_ref AirPlayReceiverServerPlatformCopyProperty(cf_ref server,
                                                   os_status *out_err)
 {
     cf_ref stock;
+    const char *name;
 
     resolve_cf();
     if (g_cf.server_copy == NULL)
         return NULL;
+    name = tracked_property_name(property);
+    if (name != NULL)
+        LOG_INFO(ALTINFO_MODULE,
+                 "PROPERTY_REQUEST source=server property=%s", name);
     stock = g_cf.server_copy(server, flags, property, qualifier, out_err);
     return patch_property_result(stock, property);
 }
@@ -502,10 +536,15 @@ cf_ref AirPlayReceiverSessionPlatformCopyProperty(cf_ref session,
                                                    os_status *out_err)
 {
     cf_ref stock;
+    const char *name;
 
     resolve_cf();
     if (g_cf.session_copy == NULL)
         return NULL;
+    name = tracked_property_name(property);
+    if (name != NULL)
+        LOG_INFO(ALTINFO_MODULE,
+                 "PROPERTY_REQUEST source=session property=%s", name);
     stock = g_cf.session_copy(session, flags, property, qualifier, out_err);
     return patch_property_result(stock, property);
 }
