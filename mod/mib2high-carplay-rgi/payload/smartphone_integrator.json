@@ -47,19 +47,19 @@
                 "portNumber":2
             },
             "oldMediaConnector":"0x0424:0x4040",
-            "newMediaConnector":"0x0424:0x2530",
-            "bridgePortOldMediaConnector":1,
-            "forcePowerResetOldConnector":false,
-            "powerEnableScript":"/etc/scripts/enable_usb_pwr_0.sh",
-            "powerDisableScript":"/etc/scripts/disable_usb_pwr_0.sh",
-            "powerDelayTimeHostMode":1000,
-            "powerDelayTimeDeviceMode":1000,
-            "otgStackReconnectTimeout":30000,
-            "otgStackStartScriptDeviceMode":"/etc/scripts/start_otg_stack_device_mode.sh",
-            "otgStackStartScriptHostMode":"/etc/scripts/start_otg_stack_host_mode.sh",
-            "otgStackStopScript":"/etc/scripts/stop_otg_stack.sh",
-            "otgStackDevicePath":"/dev/io-usb/otg_dev",
-            "restartOtgStackDelayTime":5000
+			"newMediaConnector":"0x0424:0x2530",
+			"bridgePortOldMediaConnector":1,
+			"forcePowerResetOldConnector":false,
+			"powerEnableScript":"/etc/scripts/enable_usb_pwr_0.sh",
+			"powerDisableScript":"/etc/scripts/disable_usb_pwr_0.sh",
+			"powerDelayTimeHostMode":1000,
+			"powerDelayTimeDeviceMode":1000,
+			"otgStackReconnectTimeout":30000,
+			"otgStackStartScriptDeviceMode":"/etc/scripts/start_otg_stack_device_mode.sh",
+			"otgStackStartScriptHostMode":"/etc/scripts/start_otg_stack_host_mode.sh",
+			"otgStackStopScript":"/etc/scripts/stop_otg_stack.sh",
+			"otgStackDevicePath":"/dev/io-usb/otg_dev",
+			"restartOtgStackDelayTime":5000
       },
     ###########################################################################
     # CHILDREN CONFIGURATION

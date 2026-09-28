@@ -489,6 +489,84 @@ static int append_string(cf_ref array, const char *value)
     return 1;
 }
 
+static void log_setup_request(void *receiver, cf_ref request)
+{
+    cf_ref streams;
+    cf_index i, n;
+
+    if (!is_dict(request)) {
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_REQUEST receiver=%p level=unknown request_not_dict=1",
+                 receiver);
+        return;
+    }
+
+    streams = dict_get(request, "streams");
+    if (!is_array(streams)) {
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_REQUEST receiver=%p level=session streams_present=0",
+                 receiver);
+        return;
+    }
+
+    n = g_api.array_count(streams);
+    LOG_INFO(ALTSCREEN_SESSION_MODULE,
+             "SETUP_REQUEST receiver=%p level=stream streams_present=1 count=%ld",
+             receiver, (long)n);
+
+    for (i = 0; i < n; ++i) {
+        cf_ref desc = (cf_ref)g_api.array_value(streams, i);
+        int ok = 0;
+        int64_t type = 0;
+
+        if (is_dict(desc))
+            type = dict_get_i64(desc, "type", &ok);
+
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_STREAM receiver=%p index=%ld type_valid=%d type=%lld",
+                 receiver, (long)i, ok, (long long)type);
+    }
+}
+
+static void log_setup_response_features(void *receiver,
+                                        os_status rc,
+                                        cf_ref response)
+{
+    cf_ref features;
+    cf_index count;
+
+    if (rc != 0) {
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_RESPONSE_FEATURES receiver=%p rc=%d skipped=setup_error",
+                 receiver, rc);
+        return;
+    }
+
+    if (!is_dict(response)) {
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_RESPONSE_FEATURES receiver=%p rc=%d response_dict=0",
+                 receiver, rc);
+        return;
+    }
+
+    features = dict_get(response, "enabledFeatures");
+    if (!is_array(features)) {
+        LOG_INFO(ALTSCREEN_SESSION_MODULE,
+                 "SETUP_RESPONSE_FEATURES receiver=%p rc=%d present=0 "
+                 "altScreen=0 viewAreas=0",
+                 receiver, rc);
+        return;
+    }
+
+    count = g_api.array_count(features);
+    LOG_INFO(ALTSCREEN_SESSION_MODULE,
+             "SETUP_RESPONSE_FEATURES receiver=%p rc=%d present=1 count=%ld "
+             "altScreen=%d viewAreas=%d",
+             receiver, rc, (long)count,
+             array_contains_string(features, "altScreen"),
+             array_contains_string(features, "viewAreas"));
+}
+
 static cf_ref build_stock_only_request(cf_ref request, cf_ref *out_alt_desc)
 {
     cf_ref streams;
@@ -1060,15 +1138,23 @@ os_status AirPlayReceiverSessionSetup(void *receiver,
     if (!altscreen_enabled() || !g_api.ready || out_response == NULL)
         return g_api.session_setup(receiver, request, out_response);
 
+    log_setup_request(receiver, request);
+
     stock_request = build_stock_only_request(request, &alt_desc);
-    if (stock_request == NULL || alt_desc == NULL)
-        return g_api.session_setup(receiver, request, out_response);
+    if (stock_request == NULL || alt_desc == NULL) {
+        rc = g_api.session_setup(receiver, request, out_response);
+        log_setup_response_features(receiver, rc,
+                                    (rc == 0 && out_response != NULL)
+                                        ? *out_response : NULL);
+        return rc;
+    }
 
     LOG_INFO(ALTSCREEN_SESSION_MODULE,
              "requested receiver=%p stock_only_request=%p descriptor=%p primary_protected=1",
              receiver, stock_request, alt_desc);
 
     rc = g_api.session_setup(receiver, stock_request, &stock_response);
+    log_setup_response_features(receiver, rc, stock_response);
     g_api.release(stock_request);
     stock_request = NULL;
     if (rc != 0) {
