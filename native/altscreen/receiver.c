@@ -26,32 +26,33 @@
 #endif
 
 /*
- * MU1440 CarPlay AltScreen Gen-2 vehicle candidate.
+ * Audi K2161 CarPlay AltScreen / Stream-111 development port.
  *
- * This source deliberately forks the vehicle-proven Run143 handshake/crypto
- * boundary but replaces UI ownership and local-consumer synchronization with
- * the independently tested alt111 C99 core. Run143 remains untouched.
+ * Target:
+ *   Audi MIB2 High
+ *   MHI2_ER_AUG22_K2161_MU1421
  *
+ * This implementation adapts the vehicle-proven GEN2 AltScreen architecture
+ * from harman-f/mhi2_altscreen_carplay to the K2161 AirPlay runtime.
  *
- * Target baseline (hard gate in installer):
- *   MHI2_ER_SKG13_P4526_MU1440
- *   /mnt/app/eso/lib/libairplay.so
- *   SHA256 193A4FD9101EC2AA05E7159CFA307B96500810D379CA74A194F172ADC13A46B5
- *
- * IRC-parity design:
- *  - Keep the exact MU1440 stock AirPlay implementation and its platform media ABI.
- *  - Replay the recovered MHI2Q IRC negotiation semantics around that stock core.
- *  - Advertise root enabledFeatures before stream 111 is selected.
- *  - Clone stock display[0], remove the reference-proven non-portable fields, and
- *    append a minimally modified AltScreen display without forcing display type=111.
- *  - Pass the original SETUP request to stock first; on 111, clone the requested
- *    stream descriptor and append dataPort + streamID=111 to the stock response.
- *  - Keep startup showUI/forceKeyFrame disabled unless parity-specific opt-in is set.
- *  - Prologue-hook stock Setup/Start/TearDown with the vehicle-proven MAP_FIXED
- *    private-page fallback because stock local binding bypasses plain interposition.
- *  - Reuse stock per-screen AES derivation/AES-CTR and receive stream 111 on TCP 6031.
+ * K2161 design:
+ *  - Preserve the stock CarPlay primary display / Stream 110.
+ *  - Advertise altScreen + viewAreas and a secondary Type-111 display.
+ *  - Use LD_PRELOAD ELF symbol interposition for the AirPlay session lifecycle.
+ *  - Do not rewrite stock libairplay executable text.
+ *  - Resolve AirPlayReceiverSessionSendCommand lazily because it is not
+ *    available during the K2161 preload constructor.
+ *  - Capture the stock CarPlay screen master key and use the K2161
+ *    AirPlay_DeriveAESKeySHA512ForScreen / AES-CTR path for Stream 111.
+ *  - Receive Stream-111 H.264 on TCP 6031.
  *  - Convert AVCC H.264 to Annex-B and expose it on 127.0.0.1:19820.
- *  - Main CarPlay stream 110 remains stock-owned.
+ *
+ * Current vehicle-test boundary:
+ *  - capability advertisement and control command paths execute;
+ *  - showUI and forceKeyFrame complete successfully;
+ *  - the sender has not yet issued a Type-111 SETUP on K2161;
+ *  - downstream video/remux/MOST operation therefore remains untested on
+ *    real K2161 Stream-111 input.
  */
 
 typedef const void *CFTypeRef;
