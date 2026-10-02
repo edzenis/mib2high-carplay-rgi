@@ -1,143 +1,147 @@
-# CarPlay AltScreen
+# Audi K2161 CarPlay AltScreen port
 
 ## Status
 
-This branch is the working AltScreen integration point. The current native build compiles successfully, but this exact build has not yet been vehicle-tested.
+Experimental CarPlay Auxiliary / ScreenAlt port for Audi MIB2 High.
 
-The existing semantic CarPlay route-guidance path remains separate. AltScreen work is intended to add a second CarPlay video stream for the instrument cluster without replacing the main CarPlay display.
+Target:
 
-## Current runtime state
+- Audi Q7 4M
+- MHI2_ER_AUG22_K2161
+- MU 1421
+- QNX 6.5 ARM
 
-The current implementation advertises a second AirPlay display with:
+This work adapts the GEN2 Stream-111 architecture from harman-f/mhi2_altscreen_carplay to Audi K2161.
+
+The normal CarPlay main display, Stream 110, remains stock-owned.
+
+## Current checkpoint
+
+Run-04 is the current vehicle-tested diagnostic checkpoint.
+
+Confirmed on K2161:
+
+- LD_PRELOAD AirPlay lifecycle interposition works
+- stock CarPlay Stream 110 remains operational
+- executable-text patching is not used
+- direct ARM text patching was abandoned after it caused dio_manager failure
+- Setup / Start / TearDown / PlatformControl / SessionControl interception works
+- K2161 screen AES master material is captured through AirPlay_DeriveAESKeySHA512ForScreen
+- AirPlayReceiverSessionSendCommand is resolved lazily
+- modesChanged and navigation state are observed
+- secondary AltScreen capability is advertised
+- showUI completes successfully
+- forceKeyFrame completes successfully
+
+Run-04 control state:
+
+```text
+control_session=1
+command_ready=1
+projection_desired=1
+shown_ack=1
+last_dispatched_request=2
+last_completed_request=2
+last_completion_status=0
+```
+
+## Secondary display profile
 
 ```text
 type=111
-geometry=800x480
-widthPhysical=0
-heightPhysical=0
+widthPixels=1010
+heightPixels=376
+widthPhysical=200
+heightPhysical=74
+maxFPS=30
 features=0
-primaryInputDevice=0
-showsInstruments=true
-initialURL=maps:/car/instrumentcluster/map
+primaryInputDevice=<absent>
+initialURL=maps:/car/instrumentcluster
+ViewAreas=enabled
 ```
 
-A previous vehicle run confirmed that the AirPlay property hook executes and appends the second display, but no type-111 stream setup was observed afterward.
+Root enabledFeatures includes altScreen and viewAreas.
 
-The current build adds runtime logging for:
+Advertised cluster URL roles:
 
 ```text
-PROPERTY_REQUEST
-PROPERTY_RETURN
-SETUP_REQUEST
-SETUP_STREAM
-SETUP_RESPONSE_FEATURES
+maps:/car/instrumentcluster
+maps:/car/instrumentcluster/map
+maps:/car/instrumentcluster/instructioncard
 ```
 
-This is intended to show exactly which AltScreen properties the phone requests, which stream types it sends during SETUP, and whether the stock session-level response already contains `altScreen` or `viewAreas`.
+## Current blocker
 
-## Reference comparison
+The sender has not yet initiated Type-111 SETUP.
 
-The working reference implementation differs from the current display advertisement in several relevant fields:
+Observed SETUP requests remain Type 110, while stream_gen/source_aus/source_idrs/delivered_aus remain zero.
+
+Therefore the current failure boundary is before the Stream-111 H.264 receive path.
+
+The remux / isoTX2 / MOST path has not yet been exercised by real Type-111 CarPlay video on K2161.
+
+## Run-04 diagnostic bootstrap
+
+Run-04 arms GEN2 control at SessionStart and issues showUI / forceKeyFrame.
+
+This proved the K2161 command path works, but later sender-side research indicates showUI is not what creates the Auxiliary / ScreenAlt stream.
+
+This behavior is therefore diagnostic, not the intended final bootstrap.
+
+## Wireless adapter diagnostic
+
+Run-04 reported sender metadata:
 
 ```text
-current                 reference
---------------------------------------------
-widthPhysical=0         non-zero physical width
-heightPhysical=0        height derived from aspect ratio
-features=0              features=10
-primaryInputDevice=0    primaryInputDevice=3
-fixed 800x480           runtime cluster geometry
+model=iPhone12,1
+osBuildVersion=21B101
+sourceVersion=320.17.6
 ```
 
-The reference session flow also advertises:
+The actual test handset is an iPhone 17 Pro running iOS 27.
+
+The next controlled test uses the same Run-04 software with the wireless adapter removed and the iPhone connected directly by USB.
+
+Primary question: does direct USB produce SETUP type=111?
+
+## Prepared media path
 
 ```text
-enabledFeatures += ["viewAreas", "altScreen"]
+iPhone CarPlay
+ -> Auxiliary / ScreenAlt Type 111
+ -> AES-CTR screen stream
+ -> AVCC H.264 -> Annex-B
+ -> direct-ts-remux
+ -> MPEG-TS
+ -> /dev/mlb/isoTX2
+ -> MOST150
+ -> Virtual Cockpit
 ```
 
-before the phone requests the type-111 stream. The current implementation leaves the stock `enabledFeatures` response unchanged.
+## Current binaries
 
-These are the next functional targets after the diagnostic run establishes the exact phone/accessory exchange.
-
-## Native build
-
-Set the QNX SDP environment and run the existing build script:
-
-```sh
-export QNX_HOST=/usr/qnx650/host/qnx6/x86
-export QNX_TARGET=/usr/qnx650/target/qnx6
-export PATH=$QNX_HOST/usr/bin:$PATH
-
-sh scripts/build-native.sh
-```
-
-Output:
+Run-04 libcarplay-altscreen.so:
 
 ```text
-build/libmib2high-carplay-rgi.so
+98519a4a2ee9997baae0f6cff182d015d2b9c0b09121608c585f793dcd404a56
 ```
 
-Current diagnostic build SHA-256:
+direct-ts-remux:
 
 ```text
-f26c011d315884c93673a6303b86a941b8295a52a04570f07a4824c9ac02c761
+b761a8741682e3cbc6e05f5fe1705475c34c4805d1cd1ce09333274a301e735e
+```
+
+isoTX2 gate:
+
+```text
+05673010a88c25022145ffb4e75d3715eaf686f4127ac188e91a52f512b9d957
 ```
 
 ## Deployment
 
-The branch contains a ready-to-use M.I.B. layout under:
+The existing tracked mod/custom.sh is from the earlier development flow and is NOT the exact Run-04 GEN2 installer.
 
-```text
-mod/
-```
+Do not use it as a Run-04 installer.
 
-Copy that `mod` directory to the SD card used by M.I.B. The required layout is:
-
-```text
-mod/
-├── custom.sh
-└── mib2high-carplay-rgi/
-    └── payload/
-        ├── libmib2high-carplay-rgi.so
-        └── smartphone_integrator.json
-```
-
-Then run the standard M.I.B. custom script entry:
-
-```text
-Advanced -> Run /mod/custom.sh
-```
-
-First run installs the payload and preserves the previous files under the SD-card backup directory. After installation, another run collects the relevant runtime logs to:
-
-```text
-mod/mib2high-carplay-rgi/collected/
-```
-
-To restore the previous files, create:
-
-```text
-mod/mib2high-carplay-rgi/ROLLBACK
-```
-
-and run `/mod/custom.sh` again.
-
-The installer does not patch the configuration on the unit. It installs the prepared configuration file directly and preloads the native library into the CarPlay process.
-
-## Diagnostic decision point
-
-The next vehicle log should make the failure boundary explicit:
-
-```text
-only type 110 arrives
-    -> capability advertisement / negotiation is still incomplete
-
-type 111 arrives, but no AltScreen session starts
-    -> private session setup is the blocker
-
-AltScreen session starts, but no frames arrive
-    -> stream/security path is the blocker
-
-frames arrive, but no cluster video
-    -> decode/output/routing path is the blocker
-```
+The current reversible installer will be added separately after the exact deployment scripts are recovered or recreated and reviewed.

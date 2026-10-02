@@ -12,3 +12,24 @@
 *.swp
 .DS_Store
 Thumbs.db
+
+# Local K2161 reverse-engineering / scratch material
+/altscreen/
+/dev4_*_audit.txt
+/displaymanager
+/dump_raw_imagefs.py
+/extract_lzo1z.py
+/find_carplay_consumers.sh
+/fingerprint_app.py
+/ident_hook.c
+/inspect_carplay.sh
+/lib*.so
+/mib2high-carplay-rgi-dev.tar.gz
+/mifs-stage2.imagefs
+/probe_lzo*.py
+/qnx-dumpifs/
+/scan_lzoz_layout.py
+/scan_qnx6.py
+
+# Local AltScreen source snapshots
+/native/altscreen/*.before-*
