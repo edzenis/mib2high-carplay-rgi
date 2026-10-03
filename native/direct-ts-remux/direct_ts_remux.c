@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include <libavformat/avformat.h>
@@ -416,10 +417,14 @@ static void make_null_packet(uint8_t *p) {
  */
 static int emit_most_block(OutCtx *o) {
     int i;
+    struct iovec iov;
     int64_t block_start_us=av_gettime_relative();
     int64_t deadline=block_start_us+2000000LL;
 
     if(o->pending_len!=MOST_BLOCK_BYTES) return AVERROR_INVALIDDATA;
+
+    iov.iov_base=o->pending;
+    iov.iov_len=MOST_BLOCK_BYTES;
     for(i=0;i<MOST_BLOCK_PACKETS;i++) {
         if(o->pending[i*TS_SIZE]!=0x47) {
             fprintf(stderr,"ERROR TS sync lost inside MOST block=%llu packet=%d\n",
@@ -433,7 +438,7 @@ static int emit_most_block(OutCtx *o) {
         int64_t call_start_us,call_end_us,wait_us;
         errno=0;
         call_start_us=av_gettime_relative();
-        w=(int)write(o->fd,o->pending,MOST_BLOCK_BYTES);
+        w=(int)writev(o->fd,&iov,1);
         call_end_us=av_gettime_relative();
         ++o->write_attempts;
         o->last_write_call_us=call_end_us-call_start_us;
@@ -471,7 +476,7 @@ static int emit_most_block(OutCtx *o) {
             o->last_block_wait_us=wait_us;
             if(wait_us>o->max_block_wait_us) o->max_block_wait_us=wait_us;
             fprintf(stderr,
-                    "ERROR MOST strict short write block=%llu rc=%d expected=%d short_writes=%llu wait_us=%lld\n",
+                    "ERROR MOST strict short writev block=%llu rc=%d expected=%d short_writes=%llu wait_us=%lld\n",
                     (unsigned long long)o->blocks,w,MOST_BLOCK_BYTES,
                     (unsigned long long)o->short_writes,(long long)wait_us);
             return AVERROR(EIO);
@@ -480,7 +485,7 @@ static int emit_most_block(OutCtx *o) {
         o->last_block_wait_us=wait_us;
         if(wait_us>o->max_block_wait_us) o->max_block_wait_us=wait_us;
         fprintf(stderr,
-                "ERROR MOST strict write block=%llu bytes=%d errno=%d (%s) write_errors=%llu wait_us=%lld\n",
+                "ERROR MOST strict writev block=%llu bytes=%d iovcnt=1 errno=%d (%s) write_errors=%llu wait_us=%lld\n",
                 (unsigned long long)o->blocks,MOST_BLOCK_BYTES,errno,strerror(errno),
                 (unsigned long long)o->write_errors,(long long)wait_us);
         return AVERROR(errno?errno:EIO);
@@ -660,7 +665,7 @@ int main(int argc,char **argv) {
     av_dict_free(&mux_opts);
     if(rc<0){errstr(rc,ebuf,sizeof(ebuf));fprintf(stderr,"ERROR write header: %s\n",ebuf);goto done;}
 
-    fprintf(stderr,"REMUX_START input=%s output=%s fps=%d max_seconds=%d pid=0x%x device=%d most_block_packets=%d write_size=%d pace=%d pace_buffer=%d\n",
+    fprintf(stderr,"REMUX_START input=%s output=%s fps=%d max_seconds=%d pid=0x%x device=%d most_block_packets=%d write_size=%d write_api=writev iovcnt=1 pace=%d pace_buffer=%d\n",
             in_url,out_path,fps,max_seconds,pid,out.device_mode,
             out.device_mode?MOST_BLOCK_PACKETS:0,
             out.device_mode?MOST_BLOCK_BYTES:0,
