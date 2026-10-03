@@ -104,7 +104,6 @@ echo "===== BUILD RUN-8 REMUX ====="
     -lbz2 \
     -lz \
     -lsocket \
-    -lpthread \
     -lm \
     -lc \
     -o "$OUT"
