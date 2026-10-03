@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout Run-8 branch
-        uses: actions/checkout@3d3c42e5aac5ba80515da1593e3d1f3122195a92
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
 
       - name: Build pinned QNX 6.5 ARMv7 toolchain
         shell: bash
