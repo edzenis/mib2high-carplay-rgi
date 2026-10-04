@@ -12,6 +12,8 @@ jobs:
           name: k2161-gen2-core-source
           path: |
             native/altscreen-gen2-k2161
+            native/vc_render-k2161
             scripts/build-gen2-k2161.sh
+            scripts/build-vc-render-k2161.sh
           if-no-files-found: error
           compression-level: 6
