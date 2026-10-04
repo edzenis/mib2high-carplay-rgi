@@ -1,0 +1,17 @@
+name: Export K2161 GEN2 core source
+on:
+  push:
+    branches: [k2161-gen2-core]
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: k2161-gen2-core-source
+          path: |
+            native/altscreen-gen2-k2161
+            scripts/build-gen2-k2161.sh
+          if-no-files-found: error
+          compression-level: 6
