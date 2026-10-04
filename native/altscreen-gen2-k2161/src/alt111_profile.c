@@ -1,12 +1,12 @@
 #include "alt111.h"
 #include <string.h>
 
-const char *alt111_initial_url(void) { return "maps:/car/instrumentcluster"; }
+const char *alt111_initial_url(void) { return "maps:/car/instrumentcluster/map"; }
 
 void alt111_profile_k2161(struct alt111_profile *p, unsigned hid_ready)
 {
     memset(p, 0, sizeof(*p));
-    memcpy(p->uuid, "b7e6c5a0-2222-4000-8000-000000000002", 37);
+    memcpy(p->uuid, "E0CB6FB0-0000-0000-0000-0000C0FFEE58", 37);
     p->type = 111;
     /* Exact Run-8 K2161 advertisement baseline. */
     p->width = 800; p->height = 480;
