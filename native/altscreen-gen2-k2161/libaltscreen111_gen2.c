@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -14,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 #include "alt111.h"
@@ -50,7 +52,7 @@
  *  - Prologue-hook stock Setup/Start/TearDown with the vehicle-proven MAP_FIXED
  *    private-page fallback because stock local binding bypasses plain interposition.
  *  - Reuse stock per-screen AES derivation/AES-CTR and receive stream 111 on TCP 6031.
- *  - Convert AVCC H.264 to Annex-B and expose it on 127.0.0.1:19820.
+ *  - Convert AVCC H.264 to complete Annex-B AUs and forward AV11 frames to vc_render on 127.0.0.1:19830.
  *  - Main CarPlay stream 110 remains stock-owned.
  */
 
@@ -221,11 +223,9 @@ static int g_alt_thread_started;
 static aes_ctr_storage_t g_alt_aes;
 static int g_alt_aes_valid;
 
-static int g_tee_listen = -1;
 static int g_tee_client = -1;
 static uint64_t g_tee_consumer_generation;
-static pthread_t g_tee_thread;
-static int g_tee_started;
+static uint64_t g_tee_retry_ms;
 
 static int g_capture_listen = -1;
 static int g_capture_client = -1;
@@ -239,7 +239,7 @@ static uint64_t g_capture_drops;
 
 static int g_enabled = 1;
 static int g_alt_port = 6031;
-static int g_tee_port = 19820;
+static int g_tee_port = 19830;
 static int g_width = 800;
 static int g_height = 480;
 static int g_width_mm = 0;
@@ -336,6 +336,7 @@ static void gen2_close_consumer(void);
 static void gen2_resync_poll(void);
 static void gen2_d2_schedule(unsigned source, const char *label);
 static void tee_drop_client_locked(void);
+static int renderer_connect_if_needed(void);
 static void capture_drop_client_locked(void);
 static void capture_mirror_send(const uint8_t *p, size_t n,
                                 const struct alt111_output_ticket *ticket);
@@ -1206,29 +1207,38 @@ static void gen2_consumer_attach(void)
 
 static void *gen2_output_worker(void *arg)
 {
-    uint8_t *copy = NULL;
+    uint8_t *frame = NULL;
     size_t cap = 0;
     (void)arg;
 
     for (;;) {
         const uint8_t *p = NULL;
-        size_t n = 0, chunk = 0;
+        size_t n = 0, total = 0, off = 0;
         struct alt111_output_ticket ticket;
-        int prc, fd, send_failed = 0, would_block = 0, stale_socket = 0;
+        uint32_t hdr[5];
+        uint64_t ts_us;
+        int prc, fd, send_failed = 0, stale_socket = 0, need_attach = 0;
         int arc = ALT111_WAIT, primed_before = 0, primed_after = 0;
         uint64_t delivered_before = 0, delivered_after = 0;
-        ssize_t sent = 0;
 
         /*
-         * Keep the core generation stable from the final peek through the
-         * nonblocking socket write and advance. This closes the last race where
-         * a codec/consumer generation could be invalidated after bytes were
-         * copied but before they were sent.
-         *
-         * g_lock is nested only inside g2_core_lock here. All other adapter
-         * paths release g_lock before acquiring g2_core_lock, so there is no
-         * reverse nested order.
+         * vc_render is the listening side. Keep the receiver core independent
+         * of renderer lifetime: reconnect on loopback and attach a fresh core
+         * consumer only while an active Stream-111 generation exists.
          */
+        if (renderer_connect_if_needed() != 0) {
+            usleep(10000);
+            continue;
+        }
+        pthread_mutex_lock(&g2_core_lock);
+        need_attach = g2_video.active && !g2_video.attached;
+        pthread_mutex_unlock(&g2_core_lock);
+        if (need_attach) {
+            gen2_consumer_attach();
+            usleep(1000);
+            continue;
+        }
+
         pthread_mutex_lock(&g2_core_lock);
         prc = alt111_video_peek(&g2_video, &p, &n, &ticket);
         if (prc != ALT111_OK || !n) {
@@ -1236,37 +1246,58 @@ static void *gen2_output_worker(void *arg)
             usleep(5000);
             continue;
         }
+        /* AV11 is AU-framed. Partial core offsets must never become a new
+         * frame header; fail closed and re-prime instead. */
+        if (ticket.offset != 0 || n > ALT111_AU_LIMIT) {
+            logf_u2("gen2 AV11 refused non-AU output offset=%zu len=%zu", ticket.offset, n);
+            alt111_video_detach(&g2_video);
+            pthread_cond_broadcast(&g2_core_cv);
+            pthread_mutex_unlock(&g2_core_lock);
+            pthread_mutex_lock(&g_lock);
+            tee_drop_client_locked();
+            pthread_mutex_unlock(&g_lock);
+            usleep(10000);
+            continue;
+        }
 
-        chunk = n > 65536u ? 65536u : n;
-        if (cap < chunk) {
-            uint8_t *next = (uint8_t *)realloc(copy, chunk);
+        total = sizeof(hdr) + n;
+        if (cap < total) {
+            uint8_t *next = (uint8_t *)realloc(frame, total);
             if (!next) {
                 pthread_mutex_unlock(&g2_core_lock);
                 usleep(10000);
                 continue;
             }
-            copy = next;
-            cap = chunk;
+            frame = next;
+            cap = total;
         }
-        memcpy(copy, p, chunk);
+        ts_us = monotonic_ms() * 1000u;
+        hdr[0] = 0x31315641u; /* 'AV11' little-endian */
+        hdr[1] = (uint32_t)n;
+        hdr[2] = (uint32_t)(ts_us & 0xffffffffu);
+        hdr[3] = (uint32_t)(ts_us >> 32);
+        hdr[4] = ticket.idr ? 1u : 0u;
+        memcpy(frame, hdr, sizeof(hdr));
+        memcpy(frame + sizeof(hdr), p, n);
 
         delivered_before = g2_video.delivered_aus;
         primed_before = g2_video.consumer_primed;
 
+        /* Keep generation stable while a bounded socket write is in flight.
+         * SO_SNDTIMEO on the loopback socket prevents an indefinite stall. */
         pthread_mutex_lock(&g_lock);
         fd = g_tee_client;
         if (fd >= 0 && g_tee_consumer_generation != ticket.consumer) {
             stale_socket = 1;
         } else if (fd >= 0) {
-            do {
-                sent = send(fd, copy, chunk, MSG_NOSIGNAL);
-            } while (sent < 0 && errno == EINTR);
-
-            if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                would_block = 1;
-            } else if (sent <= 0) {
+            while (off < total) {
+                ssize_t w = send(fd, frame + off, total - off, MSG_NOSIGNAL);
+                if (w > 0) { off += (size_t)w; continue; }
+                if (w < 0 && errno == EINTR) continue;
+                logf_u2("gen2 AV11 send failed errno=%d sent=%zu/%zu", errno, off, total);
                 tee_drop_client_locked();
                 send_failed = 1;
+                break;
             }
         } else {
             send_failed = 1;
@@ -1279,13 +1310,7 @@ static void *gen2_output_worker(void *arg)
             continue;
         }
 
-        if (would_block) {
-            pthread_mutex_unlock(&g2_core_lock);
-            usleep(5000);
-            continue;
-        }
-
-        if (send_failed) {
+        if (send_failed || off != total) {
             alt111_video_detach(&g2_video);
             pthread_cond_broadcast(&g2_core_cv);
             pthread_mutex_unlock(&g2_core_lock);
@@ -1294,29 +1319,16 @@ static void *gen2_output_worker(void *arg)
             continue;
         }
 
-        /*
-         * Passive capture mirror: copy only bytes that the primary pre-TS
-         * consumer actually accepted. The mirror is nonblocking and may be
-         * dropped on any backpressure/partial write; it can never delay or
-         * detach the production consumer.
-         */
-        capture_mirror_send(copy, (size_t)sent, &ticket);
+        /* Diagnostic capture remains raw Annex-B and observes only complete AUs
+         * accepted by the production AV11 sink. */
+        capture_mirror_send(frame + sizeof(hdr), n, &ticket);
 
-        arc = alt111_video_advance(&g2_video, &ticket, (size_t)sent);
+        arc = alt111_video_advance(&g2_video, &ticket, n);
         delivered_after = g2_video.delivered_aus;
         primed_after = g2_video.consumer_primed;
         pthread_mutex_unlock(&g2_core_lock);
 
         if (arc == ALT111_OK && delivered_after > delivered_before) {
-            /*
-             * Before a consumer attaches the source heartbeat is enough to let
-             * Auto-Direct start the bridge. Once attached, only actual complete
-             * AU delivery advances the heartbeat, so DIRECT cannot be declared
-             * ready merely on non-IDR source traffic.
-             *
-             * The first priming AU bypasses the 250 ms throttle: a static map
-             * may emit no second frame.
-             */
             if (!primed_before && primed_after)
                 publish_video_heartbeat_force();
             else
@@ -1401,37 +1413,50 @@ static void capture_mirror_send(const uint8_t *p, size_t n,
     if (publish) capture_publish_status(drop ? "dropped" : "recording");
 }
 
-static void *tee_accept_thread(void *arg)
+static int renderer_connect_if_needed(void)
 {
-    (void)arg;
-    for (;;) {
-        int c = accept(g_tee_listen, NULL, NULL);
-        if (c < 0) { if (errno == EINTR) continue; sleep(1); continue; }
-        {
-            int flags = fcntl(c, F_GETFL, 0);
-            if (flags >= 0) (void)fcntl(c, F_SETFL, flags | O_NONBLOCK);
-        }
-        pthread_mutex_lock(&g_lock);
-        tee_drop_client_locked();
-        g_tee_client = c;
-        pthread_mutex_unlock(&g_lock);
-        logf_u2("gen2 renderer connected nonblocking on 127.0.0.1:%d; waiting for config+complete IDR", g_tee_port);
-        gen2_consumer_attach();
-    }
-    return NULL;
-}
+    int fd, one = 1, sb = 512 * 1024;
+    struct sockaddr_in a;
+    struct timeval tv;
+    uint64_t now = monotonic_ms();
 
-static int start_tee_server(void)
-{
-    int actual = 0;
-    if (g_tee_started) return 0;
-    g_tee_listen = bind_listener_ipv4(g_tee_port, &actual, 1, 0);
-    if (g_tee_listen < 0) { logf_u2("cannot bind renderer tee port %d: %s", g_tee_port, strerror(errno)); return -1; }
-    g_tee_port = actual;
-    if (pthread_create(&g_tee_thread, NULL, tee_accept_thread, NULL) != 0) { close(g_tee_listen); g_tee_listen=-1; return -1; }
-    pthread_detach(g_tee_thread);
-    g_tee_started = 1;
-    logf_u2("renderer tee listening on 127.0.0.1:%d", g_tee_port);
+    pthread_mutex_lock(&g_lock);
+    if (g_tee_client >= 0) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    if (now < g_tee_retry_ms) {
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+    g_tee_retry_ms = now + 250u;
+    pthread_mutex_unlock(&g_lock);
+
+    fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) return -1;
+    memset(&a, 0, sizeof(a));
+    a.sin_family = AF_INET;
+    a.sin_port = htons((uint16_t)g_tee_port);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    tv.tv_sec = 0;
+    tv.tv_usec = 150000;
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sb, sizeof(sb));
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    pthread_mutex_lock(&g_lock);
+    if (g_tee_client < 0) {
+        g_tee_client = fd;
+        g_tee_consumer_generation = 0;
+        fd = -1;
+    }
+    pthread_mutex_unlock(&g_lock);
+    if (fd >= 0) close(fd);
+    logf_u2("gen2 AV11 connected to vc_render on 127.0.0.1:%d", g_tee_port);
     return 0;
 }
 
@@ -3397,7 +3422,7 @@ static void altscreen111_init(void)
     signal(SIGPIPE,SIG_IGN);
     g_enabled=env_i("ALTSCREEN111_ENABLED",1);
     g_alt_port=env_i("ALTSCREEN111_PORT",6031);
-    g_tee_port=env_i("ALTSCREEN111_TEE_PORT",19820);
+    g_tee_port=env_i("ALTSCREEN111_TEE_PORT",19830);
     g_capture_port=env_i("ALTSCREEN111_CAPTURE_PORT",19821);
     g_width=env_i("ALTSCREEN111_WIDTH",800);
     g_height=env_i("ALTSCREEN111_HEIGHT",480);
@@ -3469,14 +3494,9 @@ static void altscreen111_init(void)
         publish_state("error");
         return;
     }
-    if(start_tee_server()!=0){
-        g_enabled=0;
-        publish_state("error");
-        logf_u2("cannot start local H264 tee; AltScreen disabled fail-closed");
-        return;
-    }
+    logf_u2("GEN2 AV11 sink target vc_render=127.0.0.1:%d; reconnect-on-demand", g_tee_port);
     /*
-     * Diagnostic mirror failure is non-fatal. The production tee/remux path
+     * Diagnostic mirror failure is non-fatal. The production AV11 renderer path
      * must remain usable even if the optional capture port cannot bind.
      */
     if(start_capture_server()!=0)
