@@ -27,13 +27,6 @@ jobs:
             -t qnx65-armv7-toolchain:4.9 \
             qnx-toolchain
 
-      - name: Build exact Run 8 hook
-        run: |
-          docker run --rm --platform=linux/amd64 \
-            -v "$GITHUB_WORKSPACE":/src -w /src \
-            qnx65-armv7-toolchain:4.9 \
-            sh -lc './scripts/build-native.sh && file build/libmib2high-carplay-rgi.so && sha256sum build/libmib2high-carplay-rgi.so'
-
       - name: Export host compiler and qcc
         run: |
           rm -rf qnx49-host-export
@@ -53,23 +46,14 @@ jobs:
           cp /usr/bin/qemu-i386-static qnx49-host-export/qemu-i386-static
           chmod +x qnx49-host-export/qemu-i386-static
 
-      - name: Record versions
+      - name: Record toolchain versions
         run: |
           {
             echo "LUKA_COMMIT=baa45224f18ae6b13c2e9c77c6663bb8181eb6a1"
             echo "RUN8_COMMIT=$(git rev-parse HEAD)"
             docker run --rm qnx65-armv7-toolchain:4.9 arm-unknown-nto-qnx6.5.0eabi-gcc --version | head -1
             docker run --rm qnx65-armv7-toolchain:4.9 qcc -Vgcc_ntoarmv7le --version | head -1
-            sha256sum build/libmib2high-carplay-rgi.so
           } | tee qnx49-host-export/BUILDINFO.txt
-
-      - name: Upload Run 8 GCC 4.9 control binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: run8-qnx49-control
-          path: build/libmib2high-carplay-rgi.so
-          if-no-files-found: error
-          compression-level: 0
 
       - name: Upload QNX GCC 4.9 host bundle
         uses: actions/upload-artifact@v4
@@ -78,3 +62,22 @@ jobs:
           path: qnx49-host-export
           if-no-files-found: error
           compression-level: 6
+
+      - name: Build Run 8 compatibility probe
+        run: |
+          # Luka GCC 4.9 does not get size_t transitively in ident_hook.c.
+          # Add only the missing standard declaration for this compiler probe.
+          sed -i '1i#include <stddef.h>' native/ident_hook.c
+          git diff -- native/ident_hook.c
+          docker run --rm --platform=linux/amd64 \
+            -v "$GITHUB_WORKSPACE":/src -w /src \
+            qnx65-armv7-toolchain:4.9 \
+            sh -lc './scripts/build-native.sh && file build/libmib2high-carplay-rgi.so && sha256sum build/libmib2high-carplay-rgi.so'
+
+      - name: Upload Run 8 compatibility binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: run8-qnx49-compat
+          path: build/libmib2high-carplay-rgi.so
+          if-no-files-found: error
+          compression-level: 0
