@@ -1,0 +1,80 @@
+name: QNX toolchain bootstrap
+
+on:
+  push:
+    branches:
+      - qnx-toolchain-bootstrap
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Run 8
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned Luka toolchain source
+        run: |
+          git clone https://github.com/luka-dev/qnx65-armv7-toolchain.git qnx-toolchain
+          cd qnx-toolchain
+          git checkout baa45224f18ae6b13c2e9c77c6663bb8181eb6a1
+
+      - name: Build QNX 6.5 ARMv7 compiler image
+        run: |
+          docker build --platform=linux/amd64 \
+            --target base-env \
+            --build-arg BASE=base-8.5 \
+            -t qnx65-armv7-toolchain:8.5 \
+            qnx-toolchain
+
+      - name: Build exact Run 8 hook
+        run: |
+          docker run --rm --platform=linux/amd64 \
+            -v "$GITHUB_WORKSPACE":/src -w /src \
+            qnx65-armv7-toolchain:8.5 \
+            sh -lc './scripts/build-native.sh && file build/libmib2high-carplay-rgi.so && sha256sum build/libmib2high-carplay-rgi.so'
+
+      - name: Export host compiler and qcc
+        run: |
+          rm -rf qnx-host-export
+          mkdir -p qnx-host-export
+          cid=$(docker create qnx65-armv7-toolchain:8.5)
+          docker cp "$cid:/opt/qnx650/host/linux/x86/usr" qnx-host-export/usr
+          docker cp "$cid:/opt/tools/qcc/bin/qcc" qnx-host-export/qcc
+          mkdir -p qnx-host-export/i386-root/lib
+          docker cp "$cid:/lib/i386-linux-gnu" qnx-host-export/i386-root/lib/i386-linux-gnu
+          docker cp "$cid:/lib/ld-linux.so.2" qnx-host-export/i386-root/lib/ld-linux.so.2
+          docker rm "$cid"
+
+      - name: Add static i386 emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+          cp /usr/bin/qemu-i386-static qnx-host-export/qemu-i386-static
+          chmod +x qnx-host-export/qemu-i386-static
+
+      - name: Record versions
+        run: |
+          {
+            echo "LUKA_COMMIT=baa45224f18ae6b13c2e9c77c6663bb8181eb6a1"
+            echo "RUN8_COMMIT=$(git rev-parse HEAD)"
+            docker run --rm qnx65-armv7-toolchain:8.5 arm-unknown-nto-qnx6.5.0eabi-gcc --version | head -1
+            docker run --rm qnx65-armv7-toolchain:8.5 qcc -Vgcc_ntoarmv7le --version | head -1
+            sha256sum build/libmib2high-carplay-rgi.so
+          } | tee qnx-host-export/BUILDINFO.txt
+
+      - name: Upload Run 8 control binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: run8-qnx85-control
+          path: build/libmib2high-carplay-rgi.so
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload QNX host toolchain bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: qnx85-host-bundle
+          path: qnx-host-export
+          if-no-files-found: error
+          compression-level: 6
