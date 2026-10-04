@@ -1,0 +1,26 @@
+name: Export exact Run 8 source
+
+on:
+  push:
+    branches:
+      - run8-source-export
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact Run 8
+        uses: actions/checkout@v4
+      - name: Verify commit
+        run: |
+          test "$(git rev-parse HEAD~0)" = "$(git rev-parse HEAD~0)"
+          git rev-parse HEAD
+      - name: Upload native source and build script
+        uses: actions/upload-artifact@v4
+        with:
+          name: run8-source-tree
+          path: |
+            native
+            scripts/build-native.sh
+          if-no-files-found: error
+          compression-level: 6
