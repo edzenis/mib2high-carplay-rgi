@@ -52,7 +52,7 @@ static nv_close_t p_close;
 
 static volatile sig_atomic_t g_quit;
 static void *g_h;                 /* current NvSS handle */
-static int g_out = 1, g_layer = 58, g_w = 1440, g_hgt = 456, g_fps = 30, g_port = 19830;
+static int g_out = 1, g_layer = 58, g_w = 800, g_hgt = 480, g_fps = 30, g_port = 19830;
 static uint32_t g_frames, g_dec_err, g_slow;
 static int g_ts_mode;   /* 0 raw, 1 wall clock (us), 2 zero */
 static uint32_t w_n;
