@@ -1,7 +1,7 @@
 name: Export K2161 GEN2 core source
 on:
   push:
-    branches: [k2161-gen2-core]
+    branches: [k2161-gen2-core, k2161-gen2-av11-sink]
 jobs:
   export:
     runs-on: ubuntu-24.04
