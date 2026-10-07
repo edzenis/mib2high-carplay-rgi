@@ -10,38 +10,35 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch Luka release jar
+      - name: Fetch Luka release jars
         run: |
           set -eux
-          curl -L --fail --retry 3 \
-            -o luka-carplay_hook.jar \
+          curl -L --fail --retry 3 -o luka-current.jar \
             https://github.com/luka-dev/mib2q-carplay-rgi/releases/download/MHI2Q-2026-09-23/carplay_hook.jar
-          sha256sum luka-carplay_hook.jar
-          test "$(sha256sum luka-carplay_hook.jar | awk '{print $1}')" = "5a1ed6ad2f8b1d93981801009864ce47583ad5a2edb617b518ff55cde333f326"
-      - name: Extract touchpad-only classes
+          curl -L --fail --retry 3 -o luka-may16.jar \
+            https://github.com/luka-dev/mib2q-carplay-rgi/releases/download/MHI2Q-2026-05-16/carplay_hook.jar
+          test "$(sha256sum luka-current.jar | awk '{print $1}')" = "5a1ed6ad2f8b1d93981801009864ce47583ad5a2edb617b518ff55cde333f326"
+          test "$(sha256sum luka-may16.jar | awk '{print $1}')" = "b839122c1a14379407884d58747a57d6b5026db8d04e485752d34dbd22a85e76"
+      - name: Inspect both
         run: |
           set -eux
-          mkdir -p slim
-          unzip -q luka-carplay_hook.jar -d full
-          find full -type f | sort > full-entries.txt
-          mkdir -p slim/de/audi/app/terminalmode/dsi/carplay
-          mkdir -p slim/com/luka/carplay/input
-          cp full/com/luka/carplay/input/TouchpadController.class slim/com/luka/carplay/input/
-          cp full/com/luka/carplay/input/TouchpadController\$TouchSink.class slim/com/luka/carplay/input/
-          cp full/de/audi/app/terminalmode/dsi/carplay/CarplayDSILifecycleController\$TerminalModeDSIKeyEventsController.class slim/de/audi/app/terminalmode/dsi/carplay/
-          cp full/de/audi/app/terminalmode/dsi/carplay/CarplayDSILifecycleController\$TerminalModeDSIKeyEventsController\$1.class slim/de/audi/app/terminalmode/dsi/carplay/
-          (cd slim && jar cf ../luka-touchpad-only.jar .)
-          jar tf luka-touchpad-only.jar
-          javap -classpath luka-carplay_hook.jar -p -c 'de.audi.app.terminalmode.dsi.carplay.CarplayDSILifecycleController$TerminalModeDSIKeyEventsController' > inner-javap.txt
-          javap -classpath luka-carplay_hook.jar -p -c com.luka.carplay.input.TouchpadController > touchpad-javap.txt
-          sha256sum luka-touchpad-only.jar > SHA256SUMS.txt
+          jar tf luka-current.jar > current-entries.txt
+          jar tf luka-may16.jar > may16-entries.txt
+          javap -classpath luka-current.jar -p -c 'de.audi.app.terminalmode.dsi.carplay.CarplayDSILifecycleController$TerminalModeDSIKeyEventsController' > current-inner-javap.txt
+          javap -classpath luka-current.jar -p -c com.luka.carplay.input.TouchpadController > current-touchpad-javap.txt
+          javap -classpath luka-may16.jar -p -c 'de.audi.app.terminalmode.dsi.carplay.CarplayDSILifecycleController$TerminalModeDSIKeyEventsController' > may16-inner-javap.txt
+          javap -classpath luka-may16.jar -p -c com.luka.carplay.cursor.CursorController > may16-cursor-javap.txt
+          sha256sum luka-current.jar luka-may16.jar > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: luka-touchpad-port-input
+          name: luka-touchpad-port-input-v2
           path: |
-            luka-carplay_hook.jar
-            luka-touchpad-only.jar
-            full-entries.txt
-            inner-javap.txt
-            touchpad-javap.txt
+            luka-current.jar
+            luka-may16.jar
+            current-entries.txt
+            may16-entries.txt
+            current-inner-javap.txt
+            current-touchpad-javap.txt
+            may16-inner-javap.txt
+            may16-cursor-javap.txt
             SHA256SUMS.txt
